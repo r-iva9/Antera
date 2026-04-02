@@ -22,6 +22,24 @@
 const VERSION = "1.0.0"
 
 ------------
+-- CONFIG
+
+const CONFIG = table.freeze {
+	WarnWrongPropertyTypes = true,
+	WriteWrongPropertyTypes = false,
+
+	WarnReadonlyProperties = true,
+	WriteReadonlyProperties = false,
+
+	WarnWriteonlyProperties = true,
+	WriteWriteonlyProperties = true,
+
+	-- The path to a modulescript returning a table of
+	-- {classname = {property = value}} defaults for Antera.New
+	MountTemplates = nil
+}
+
+------------
 -- LOGGING
 
 const Log = {
@@ -39,7 +57,7 @@ const Log = {
 	Error = function(...)
 		error("[Antera] " .. ...)
 	end,
-	ErrorAssert = function(config: boolean, condition: boolean, ...)
+	ErrorAssert = function(config: boolean, condition: any?, ...)
 		if not config then
 			return
 		end
@@ -50,13 +68,16 @@ const Log = {
 ------------
 -- DEPENDENCIES
 
+const ReflectionService = game:GetService("ReflectionService")
+local RunService = game:GetService("RunService")
+
 Log.ErrorAssert(
 	true,
-	script :: any == nil or (script and script.Parent ~= nil) and (script.Parent:FindFirstChild "Anex" ~= nil),
+	script :: any == nil or ((script and script.Parent ~= nil) and (script.Parent:FindFirstChild "Anex" ~= nil)),
 	"Anex is required but wasn't found. Make sure Antera and Anex are in the same directory."
 )
-const Anex = require "../Anex/src" --script.Parent.Anex
-Log.ErrorAssert(true, (Anex.Version ~= "1.0.0"), "Anex is of outdated version! Make sure your Anex is at least v1.1.0+")
+const Anex = require (script.Parent.Anex) --"../Anex/src" --
+Log.ErrorAssert(true, (Anex.IsState ~= nil and Anex.Statify ~= nil), "Anex is of outdated version! Make sure your Anex is at least v1.1.0+")
 
 local Antera = {
 	Name = "Antera",
@@ -88,7 +109,9 @@ type Hook<T = any> = Anex.Hook<T>
 
 -- Special
 -- stylua: ignore
---- a
+--[[
+	Desc
+]]
 export type Amplified<T = table> = setmetatable<
 {}, 
 {
@@ -127,16 +150,26 @@ export type SpecialValue<K> = {
 	__fn: fn,
 }
 
-type Value<T> = index<typeof(Antera), T>
+export type Mounted<T = table> = {
+	Instance: Instance,
+	Amplified: Amplified<T>,
+	Destroy: <A...>(A...) -> ()
+}
+
+type AnteraValue<T> = index<typeof(Antera) & {[any]: never}, T>
+type AnexValue<T> = index<typeof(Anex) & table, T>
 
 type function importTail(t: type, index: type)
 	assert(t.tag)
 	assert(index.tag)
 
-	local args = string.split(t:value() :: string, "/")
+	local args: any = string.split(t:value() :: string, "/")
 
 	for k, v in args do
-		args[k] = Value(types.singleton(v))
+		args[k] = AnteraValue(types.singleton(v))
+		if args[k] == types.never then
+			args[k] = AnexValue(types.singleton(v))
+		end
 	end
 
 	local typeargs: { type } = args :: any
@@ -158,6 +191,11 @@ end
 --- Returns a typesafe reference to `t`
 const function ref<T>(t: T): any
 	return t :: any
+end
+
+--- Typecasts tail T... to ...any
+const function reftail<T...>(...:T...): ...any
+	return ...
 end
 
 --- Returns true if `t` is a specialValue table and false if not
@@ -219,13 +257,47 @@ const function deepClone(t: table)
 	return result
 end
 
+const ClassPropertiesMemo = {}
+const ClassEventsMemo = {}
+
+const function applyProperty(instance: Instance, prop: string, value: any?)
+	if not ClassPropertiesMemo[instance.ClassName][prop] then return end
+	const ClassProperty: never = ClassPropertiesMemo[instance.ClassName][prop]
+
+	if (ClassProperty.Permits.Write and tostring(ClassProperty.Permits.Write) ~= "") or (RunService:IsServer() and tostring(ClassProperty.Permits.Write) == "LocalUser") then 
+		Log.WarnAssert(CONFIG.WarnReadonlyProperties, false, 
+			string.format("WarnReadonlyProperties: Cannot set the property %s on instance %s (%s) to %s: it is read-only.", 
+			prop, instance.Name, instance.ClassName, tostring(value))
+		)
+		if not CONFIG.WriteReadonlyProperties then return end
+	end
+
+	if (ClassProperty.Permits.Read and tostring(ClassProperty.Permits.Read) ~= "") or (RunService:IsServer() and tostring(ClassProperty.Permits.Read) == "LocalUser") then 
+		Log.WarnAssert(CONFIG.WarnWriteonlyProperties, false, 
+			string.format("WarnWriteonlyProperties: The property %s on instance %s (%s) is write-only.", 
+			prop, instance.Name, instance.ClassName)
+		)
+		if not CONFIG.WriteWriteonlyProperties then return end
+	end
+
+	if typeof(value) ~= ClassProperty.Type.ScriptType then
+		Log.WarnAssert(CONFIG.WarnWrongPropertyTypes, false, 
+			string.format("WarnWrongPropertyTypes: Attempt to set the property %s on instance %s (%s) to %s (%s); expected %s", 
+			prop, instance.Name, instance.ClassName, tostring(value), typeof(value), ClassProperty.Type.ScriptType)
+		)
+		if not CONFIG.WriteWrongPropertyTypes then return end
+	end
+
+	ref(instance)[prop] = value
+end
+
 ------------
 -- ANTERA
 
 --[[
-	A typesafe shortcut for importing functions from Antera.<br>Returns perfectly correct types via a typefunction.
+	A typesafe shortcut for importing functions from Antera and Anex.<br>Returns perfectly correct types via a typefunction.
 	```luau
-	const IsAmplified, Amplify = Antera:Import "IsAmplified/Amplify"
+	const Amplify, Effect = Antera:Import "Amplify/Effect"
 	```
 ]]
 Antera.Import = function<S, T>(
@@ -245,7 +317,13 @@ Antera.Import = function<S, T>(
 	importTail<T, "11">,
 	importTail<T, "12">
 )
-	return Antera.Author :: any
+	local args = string.split(imports, "/")
+
+	for i, v in args do
+		args[i] = (ref(Antera)[v]) or (ref(Anex)[v])
+	end
+
+	return reftail(table.unpack(args))
 end
 
 Antera.IsAmplified = function<S, T>(self: S, t: T): boolean
@@ -254,6 +332,55 @@ end
 
 Antera.IsSpecial = function<S, T>(self: S, t: T): boolean
 	return isspecial(t)
+end
+
+Antera.Mount = function<S, T>(container: S, instance: Instance, amplified: Amplified<T>): Mounted<T>
+	Log.ErrorAssert(true, instance, "Antera:Mount received no instance (2nd parameter)")
+	Log.ErrorAssert(true, typeof(instance) == "Instance", "Antera:Mount received a non-instance (2nd parameter)")
+	local self: Mounted<T>
+
+	self = {
+		Instance = instance,
+		Amplified = amplified,
+		Destroy = function<A...>(...: A...)
+			table.clear(self)
+			self = nil :: never
+		end
+	}
+
+	const ClassName = instance.ClassName
+
+	if not ClassPropertiesMemo[ClassName] then
+		const Properties = ReflectionService:GetPropertiesOfClass(ClassName)
+
+		ClassPropertiesMemo[ClassName] = {} :: table
+		for _, prop in Properties do
+			ClassPropertiesMemo[ClassName][prop.Name] = prop
+		end
+	end
+	const ClassProperties = ClassPropertiesMemo[ClassName]
+
+	if not ClassEventsMemo[ClassName] then
+		const Events = ref(ReflectionService):GetEventsOfClass(ClassName) --no ill use it
+
+		ClassEventsMemo[ClassName] = {} :: table
+		for _, prop in Events do
+			ClassEventsMemo[ClassName][prop.Name] = prop
+		end
+	end
+	const ClassEvents = ClassEventsMemo[ClassName]
+
+	warn(ClassProperties, ClassEvents)
+
+	applyProperty(instance, "Parent", workspace)
+	applyProperty(instance, "Position", Vector3.new(5, 5, 5))
+	applyProperty(instance, "Anchored", true)
+
+	if container ~= Antera then
+		table.insert(container, self)
+	end
+
+	return self
 end
 
 Antera.ForSet = function<S, T>(container: S, ...: string)
@@ -349,10 +476,18 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 			-- case 8, OnSet is called via onsets and passes no value
 			elseif isspecial(val) and ref(val).__kind == "OnSet" then
 				val = ref(val) --typechecking loses its mind
+				local fn = function<A..., R...>(...: A...): R...
+					return nestval(key, val.__fn(AMPLIFIED)) :: any
+				end
+
 				for _, prop in pairs(val.__prop) do
 					ONSETS[prop] = ONSETS[prop] or {}
-					ONSETS[prop][key] = val.__fn
+					ONSETS[prop][key] = fn
 				end
+
+				-- turning OnSet into effect:
+				UPDATERS[key] = val.__fn --amp.val()
+				-- nil value originally
 
 			-- case 7, v is a table (nestval each key, value pair)
 			elseif not isspecial(ref(val)) and typeof(val) == "table" then
