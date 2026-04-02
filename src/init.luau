@@ -34,6 +34,9 @@ const CONFIG = table.freeze {
 	WarnWriteonlyProperties = true,
 	WriteWriteonlyProperties = true,
 
+	WarnWrongEvents = true,
+	--
+
 	-- The path to a modulescript returning a table of
 	-- {classname = {property = value}} defaults for Antera.New
 	MountTemplates = nil
@@ -229,6 +232,11 @@ const function isamplified<T>(t: T): boolean
 		or false
 end
 
+--- Returns true if the value is a mounted object, and false if not
+const function ismounted<T>(t: T & table): boolean
+	return (typeof(t) == "table" and not isstate(nil, t) and t.Instance and t.Amplified and t.Destroy) and true or false
+end
+
 const function newspecial<K>(kind: K, prop: { string }, fn: fn): SpecialValue<K>
 	return {
 		__kind = kind,
@@ -261,8 +269,8 @@ const ClassPropertiesMemo = {}
 const ClassEventsMemo = {}
 
 const function applyProperty(instance: Instance, prop: string, value: any?)
-	if not ClassPropertiesMemo[instance.ClassName][prop] then return end
 	const ClassProperty: never = ClassPropertiesMemo[instance.ClassName][prop]
+	if not ClassProperty :: any then return end
 
 	if (ClassProperty.Permits.Write and tostring(ClassProperty.Permits.Write) ~= "") or (RunService:IsServer() and tostring(ClassProperty.Permits.Write) == "LocalUser") then 
 		Log.WarnAssert(CONFIG.WarnReadonlyProperties, false, 
@@ -289,6 +297,13 @@ const function applyProperty(instance: Instance, prop: string, value: any?)
 	end
 
 	ref(instance)[prop] = value
+end
+
+const function applyEvent(instance: Instance, event: string, fn: fn)
+	const ClassEvent: never = ClassEventsMemo[instance.ClassName][event]
+	if not ClassEvent :: any then return end
+
+	--TODO
 end
 
 ------------
@@ -326,6 +341,10 @@ Antera.Import = function<S, T>(
 	return reftail(table.unpack(args))
 end
 
+Antera.IsMounted = function<S, T>(self: S, t: T): boolean
+	return ismounted(t)
+end
+
 Antera.IsAmplified = function<S, T>(self: S, t: T): boolean
 	return isamplified(t)
 end
@@ -334,19 +353,42 @@ Antera.IsSpecial = function<S, T>(self: S, t: T): boolean
 	return isspecial(t)
 end
 
-Antera.Mount = function<S, T>(container: S, instance: Instance, amplified: Amplified<T>): Mounted<T>
+Antera.New = function<S, T>(container: S, instanceName: string)
+	return function<T>(amplified: (T & table) | Amplified<T>)
+		const instance = Instance.new(instanceName)
+
+		--TODO: apply defaults from CONFIG
+
+		return Antera.Mount(container, instance, amplified)
+	end
+end
+
+Antera.Mount = function<S, T>(container: S, instance: Instance, amplified: (T & table) | Amplified<T>): Mounted<T>
 	Log.ErrorAssert(true, instance, "Antera:Mount received no instance (2nd parameter)")
 	Log.ErrorAssert(true, typeof(instance) == "Instance", "Antera:Mount received a non-instance (2nd parameter)")
 	local self: Mounted<T>
+
+	-- if a simple table is passed (common case)
+	if not isamplified(amplified) then
+		amplified = Antera.Amplify(container, amplified)
+	end
+	amplified = amplified :: Amplified<T>
+
+	local connection = function(self, k, v)
+		applyProperty(instance, k, v)
+	end
 
 	self = {
 		Instance = instance,
 		Amplified = amplified,
 		Destroy = function<A...>(...: A...)
 			table.clear(self)
+			ref(amplified):Connect(connection, nil)
 			self = nil :: never
 		end
 	}
+
+	-- properties
 
 	const ClassName = instance.ClassName
 
@@ -358,23 +400,34 @@ Antera.Mount = function<S, T>(container: S, instance: Instance, amplified: Ampli
 			ClassPropertiesMemo[ClassName][prop.Name] = prop
 		end
 	end
-	const ClassProperties = ClassPropertiesMemo[ClassName]
 
 	if not ClassEventsMemo[ClassName] then
-		const Events = ref(ReflectionService):GetEventsOfClass(ClassName) --no ill use it
+		const Events = ref(ReflectionService):GetEventsOfClass(ClassName) --no luau lsp ill use it
 
 		ClassEventsMemo[ClassName] = {} :: table
 		for _, prop in Events do
 			ClassEventsMemo[ClassName][prop.Name] = prop
 		end
 	end
-	const ClassEvents = ClassEventsMemo[ClassName]
 
-	warn(ClassProperties, ClassEvents)
+	-- applying
 
-	applyProperty(instance, "Parent", workspace)
-	applyProperty(instance, "Position", Vector3.new(5, 5, 5))
-	applyProperty(instance, "Anchored", true)
+	ref(amplified):Connect(connection)
+	for k, v in amplified() do
+		-- children instances
+		if typeof(k) == "number" and ismounted(v) then
+			v.Instance.Parent = instance
+			-- set the amplified value key instead of direct parent?
+		elseif typeof(k) == "number" and typeof(v) == "Instance" then
+			v.Parent = instance
+		else
+			-- properties
+			applyProperty(instance, k, v)
+		end
+		-- TODO: events
+	end
+
+	-- misc
 
 	if container ~= Antera then
 		table.insert(container, self)
@@ -413,6 +466,17 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 	local VALUE: table = {}
 
 	local self: any = Anex:State(VALUE)
+
+	--[[
+		Custom Fire for Amplifieds; this will be removed with an Anex patch
+	]]
+	const connections = self.Connections
+	self.Fire = function<S, K, V>(self: S, key: K, value: V): S
+		for _, conn in connections do
+			conn(self, key, value)
+		end
+		return self
+	end
 
 	local UPDATERS: table<any, fn> = {}
 	local STATES: table<any, State> = {}
@@ -456,6 +520,18 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 					return nestval(key, val(AMPLIFIED)) :: any
 				end]]
 				nestval(key, val(AMPLIFIED))
+
+			-- case 9, if v is a mounted object then its passed forward
+			elseif ismounted(val) then
+				VALUE[key] = val
+				--TODO: add the mounted as the updaters[key]
+
+				self:Fire(key :: any, val)
+				if ONSETS[key] then
+					for _, j in ONSETS[key] do
+						j(AMPLIFIED)
+					end
+				end
 
 			-- case 4, if v is ForSet is called immediately and via onsets and passes down a value
 			-- onevent and onchange can only be handled by alloy.mount so they are passed forwards
@@ -561,7 +637,7 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 			next__order[nextnumerickey(next__order)] = { k, v, __fromprev = true } --special values are automatically one order higher
 			continue
 		-- if it's just a table, then it's an order table and it should be moved up
-		elseif typeof(v) == "table" and not isstate(nil, v) then
+		elseif typeof(v) == "table" and not isstate(nil, v) and not ismounted(v :: any) then
 			next__order[k] = v
 			continue
 		end
@@ -586,7 +662,7 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 				if isspecial(v) then
 					next__order[nextnumerickey(next__order)] = { k, v, __fromprev = true } --special values are automatically one order higher
 					continue
-				elseif typeof(v) == "table" and not isstate(nil, v) then
+				elseif typeof(v) == "table" and not isstate(nil, v) and not ismounted(v :: any) then
 					next__order[k] = v
 					continue
 				end
