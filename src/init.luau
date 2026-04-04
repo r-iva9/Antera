@@ -35,10 +35,11 @@ const CONFIG = table.freeze {
 	WriteWriteonlyProperties = true,
 
 	WarnWrongEvents = true,
-	--
+	WarnUnlistenableEvents = true,
+	ConnectUnlistenableEvents = true,
 
 	-- The path to a modulescript returning a table of
-	-- {classname = {property = value}} defaults for Antera.New
+	-- {ClassName = {Property = Value}} defaults for Antera.New
 	MountTemplates = nil
 }
 
@@ -72,7 +73,9 @@ const Log = {
 -- DEPENDENCIES
 
 const ReflectionService = game:GetService("ReflectionService")
-local RunService = game:GetService("RunService")
+const RunService = game:GetService("RunService")
+
+const Templates = if CONFIG.MountTemplates then require(CONFIG.MountTemplates) :: table else {}
 
 Log.ErrorAssert(
 	true,
@@ -82,7 +85,7 @@ Log.ErrorAssert(
 const Anex = require (script.Parent.Anex) --"../Anex/src" --
 Log.ErrorAssert(true, (Anex.IsState ~= nil and Anex.Statify ~= nil), "Anex is of outdated version! Make sure your Anex is at least v1.1.0+")
 
-local Antera = {
+const Antera = {
 	Name = "Antera",
 	Version = VERSION,
 	Author = "r-iva9",
@@ -129,7 +132,12 @@ export type Amplified<T = table> = setmetatable<
 		--[[
 			Desc
 		]]
-		NonKey: (self: Amplified<T>, value: any) -> any
+		NonKey: (self: Amplified<T>, value: any) -> any,
+
+		--[[
+			Desc
+		]]
+		Mounted: Anex.Hook<Mounted<T>>
 	}, {
 		__index: setmetatable<
 			{ [any]: fn }, --UPDATERS
@@ -149,7 +157,8 @@ type AmplifiedConstructor = <S, T>(container: S, tab: T) -> Amplified<T>
 
 export type SpecialValue<K> = {
 	__kind: K,
-	__prop: { string },
+	__prop: string | { string },
+	__arg: any?,
 	__fn: fn,
 }
 
@@ -166,7 +175,7 @@ type function importTail(t: type, index: type)
 	assert(t.tag)
 	assert(index.tag)
 
-	local args: any = string.split(t:value() :: string, "/")
+	const args: any = string.split(t:value() :: string, "/")
 
 	for k, v in args do
 		args[k] = AnteraValue(types.singleton(v))
@@ -175,7 +184,7 @@ type function importTail(t: type, index: type)
 		end
 	end
 
-	local typeargs: { type } = args :: any
+	const typeargs: { type } = args :: any
 
 	local i: string = index:value() :: string
 
@@ -237,10 +246,11 @@ const function ismounted<T>(t: T & table): boolean
 	return (typeof(t) == "table" and not isstate(nil, t) and t.Instance and t.Amplified and t.Destroy) and true or false
 end
 
-const function newspecial<K>(kind: K, prop: { string }, fn: fn): SpecialValue<K>
+const function newspecial<K>(kind: K, prop: string | { string }, fn: fn, arg: any?): SpecialValue<K>
 	return {
 		__kind = kind,
 		__prop = prop,
+		__arg = arg,
 		__fn = fn,
 		Destroy = function(self: any)
 			table.clear(self)
@@ -251,7 +261,7 @@ end
 
 --- Deeply clones table `t`, ignoring inner tables only if they are states or SpecialValues
 const function deepClone(t: table)
-	local result = {}
+	const result = {}
 
 	for k, v in pairs(t) do
 		if typeof(v) == "table" and not isstate(nil, v) and not isspecial(v) then
@@ -265,6 +275,16 @@ const function deepClone(t: table)
 	return result
 end
 
+--- Returns `true` if `v` is present in table `t`, and `false` if not
+const function hasValue(t: table, v: any)
+	for _, val in t do
+		if val==v then return true end
+	end
+	return false
+end
+
+-- tables of [classname] = {property = ReflectedProperty or ReflectedEvent} 
+-- are used to store and avoid repetitive ReflectionService api calls
 const ClassPropertiesMemo = {}
 const ClassEventsMemo = {}
 
@@ -272,7 +292,10 @@ const function applyProperty(instance: Instance, prop: string, value: any?)
 	const ClassProperty: never = ClassPropertiesMemo[instance.ClassName][prop]
 	if not ClassProperty :: any then return end
 
-	if (ClassProperty.Permits.Write and tostring(ClassProperty.Permits.Write) ~= "") or (RunService:IsServer() and tostring(ClassProperty.Permits.Write) == "LocalUser") then 
+	const Write = ClassProperty.Permits.Write
+	const Read = ClassProperty.Permits.Read
+
+	if (Write and tostring(Write) ~= "" and tostring(Write) ~= "UI") or (RunService:IsServer() and tostring(Write) == "LocalUser") then 
 		Log.WarnAssert(CONFIG.WarnReadonlyProperties, false, 
 			string.format("WarnReadonlyProperties: Cannot set the property %s on instance %s (%s) to %s: it is read-only.", 
 			prop, instance.Name, instance.ClassName, tostring(value))
@@ -280,7 +303,7 @@ const function applyProperty(instance: Instance, prop: string, value: any?)
 		if not CONFIG.WriteReadonlyProperties then return end
 	end
 
-	if (ClassProperty.Permits.Read and tostring(ClassProperty.Permits.Read) ~= "") or (RunService:IsServer() and tostring(ClassProperty.Permits.Read) == "LocalUser") then 
+	if (Read and tostring(Read) ~= "" and tostring(Read) ~= "UI") or (RunService:IsServer() and tostring(Read) == "LocalUser") then 
 		Log.WarnAssert(CONFIG.WarnWriteonlyProperties, false, 
 			string.format("WarnWriteonlyProperties: The property %s on instance %s (%s) is write-only.", 
 			prop, instance.Name, instance.ClassName)
@@ -289,6 +312,11 @@ const function applyProperty(instance: Instance, prop: string, value: any?)
 	end
 
 	if typeof(value) ~= ClassProperty.Type.ScriptType then
+		-- exception: roblox automatically converts numbers into strings
+		if typeof(value) == "number" and ClassProperty.Type.ScriptType == "string" then
+			ref(instance)[prop] = value 
+			return
+		end
 		Log.WarnAssert(CONFIG.WarnWrongPropertyTypes, false, 
 			string.format("WarnWrongPropertyTypes: Attempt to set the property %s on instance %s (%s) to %s (%s); expected %s", 
 			prop, instance.Name, instance.ClassName, tostring(value), typeof(value), ClassProperty.Type.ScriptType)
@@ -299,11 +327,21 @@ const function applyProperty(instance: Instance, prop: string, value: any?)
 	ref(instance)[prop] = value
 end
 
-const function applyEvent(instance: Instance, event: string, fn: fn)
+const function applyEvent(instance: Instance, event: string, fn: fn)	
 	const ClassEvent: never = ClassEventsMemo[instance.ClassName][event]
 	if not ClassEvent :: any then return end
 
-	--TODO
+	const Listen = ClassEvent.Permits.Listen
+
+	if (Listen and tostring(Listen) ~= "" and tostring(Listen) ~= "UI") or (RunService:IsServer() and tostring(Listen) == "LocalUser") then 
+		Log.WarnAssert(CONFIG.WarnUnlistenableEvents, false, 
+			string.format("WarnUnlistenableEvents: The event %s on instance %s (%s) cannot be listened to.", 
+			event, instance.Name, instance.ClassName)
+		)
+		if not CONFIG.ConnectUnlistenableEvents then return end
+	end
+
+	return ref(instance)[event]:Connect(fn)
 end
 
 ------------
@@ -341,23 +379,79 @@ Antera.Import = function<S, T>(
 	return reftail(table.unpack(args))
 end
 
-Antera.IsMounted = function<S, T>(self: S, t: T): boolean
-	return ismounted(t)
+Antera.IsMountedObj = function<S, T>(self: S, t: T): boolean
+	return ismounted(t or self)
 end
 
 Antera.IsAmplified = function<S, T>(self: S, t: T): boolean
-	return isamplified(t)
+	return isamplified(t or self)
 end
 
 Antera.IsSpecial = function<S, T>(self: S, t: T): boolean
-	return isspecial(t)
+	return isspecial(t or self)
 end
 
-Antera.New = function<S, T>(container: S, instanceName: string)
-	return function<T>(amplified: (T & table) | Amplified<T>)
-		const instance = Instance.new(instanceName)
+--[[
+	A function to support starting the bootstrapper.<br>Returns the Players service and the LocalPlayer.
+	```luau
+	const Players, Player = Antera:YieldForPlayer()
+	```
+]]
+Antera.YieldForPlayer = function<S>(self: S): Player
+	Log.ErrorAssert(true, RunService:IsClient(), "Attempt to call Antera:YieldForPlayer() on the server.")
+	const Players = game:GetService "Players"
+	const Player = Players.LocalPlayer
 
-		--TODO: apply defaults from CONFIG
+	if Player then return Player end
+	repeat task.wait() until Players.LocalPlayer
+
+	return Players.LocalPlayer
+end
+
+--[[
+	Identical to `Antera.New`, except creates a `ScreenGui` under `LocalPlayer.PlayerGui` with the specified `name` and `ResetOnSpawn = false`
+	```luau
+	Antera:GUI "Main" {
+		Button = Antera:New "TextButton" {
+			Antera.Child,
+			Size = UDim2.fromScale(1, 1)
+		}
+	}
+	```
+]]
+Antera.GUI = function<S>(container: S, name: string)
+	return function<T>(amplified: (T & table) | Amplified<T>)
+		const instance = Instance.new("ScreenGui")
+		instance.Name = name
+		instance.ResetOnSpawn = false
+
+		const mounted = Antera.Mount(container, instance, amplified)
+
+		instance.Parent = game:GetService "Players".LocalPlayer.PlayerGui
+		return mounted
+	end
+end
+
+Antera.New = function<S, T>(container: S, instanceClass: string)
+	return function<T>(amplified: (T & table) | Amplified<T>)
+		const instance = Instance.new(instanceClass)
+
+		-- get properties of class
+		if not ClassPropertiesMemo[instanceClass] then
+			const Properties = ReflectionService:GetPropertiesOfClass(instanceClass)
+
+			ClassPropertiesMemo[instanceClass] = {} :: table
+			for _, prop in Properties do
+				ClassPropertiesMemo[instanceClass][prop.Name] = prop
+			end
+		end
+
+		-- template default values
+		if Templates[instanceClass] then
+			for prop, value in Templates[instanceClass] do
+				applyProperty(instance, prop, value)
+			end
+		end
 
 		return Antera.Mount(container, instance, amplified)
 	end
@@ -374,16 +468,31 @@ Antera.Mount = function<S, T>(container: S, instance: Instance, amplified: (T & 
 	end
 	amplified = amplified :: Amplified<T>
 
-	local connection = function(self, k, v)
+	const connection = function(self, k, v)
 		applyProperty(instance, k, v)
 	end
+
+	-- storage for OnEvent connections
+	const eventconnections: {[any]: RBXScriptConnection} = {}
+
+	-- memo for OnEvents, not to reconnect each time the events update
+	const eventsused: {[any]: SpecialValue<"OnEvent">} = {}
+
+	-- memo to unparent children once the value changes
+	const children: {[any]: Instance} = {}
 
 	self = {
 		Instance = instance,
 		Amplified = amplified,
 		Destroy = function<A...>(...: A...)
-			table.clear(self)
 			ref(amplified):Connect(connection, nil)
+			for _, conn in eventconnections do
+				conn:Disconnect()
+			end
+			table.clear(eventconnections)
+			table.clear(children)
+
+			table.clear(self)
 			self = nil :: never
 		end
 	}
@@ -412,19 +521,54 @@ Antera.Mount = function<S, T>(container: S, instance: Instance, amplified: (T & 
 
 	-- applying
 
-	ref(amplified):Connect(connection)
-	for k, v in amplified() do
+	const function apply(k, v: any)
 		-- children instances
-		if typeof(k) == "number" and ismounted(v) then
+		if ismounted(v) and (typeof(k) == "number" or hasValue(v.Amplified(), Antera.Child)) then
 			v.Instance.Parent = instance
+			children[k] = v.Instance
 			-- set the amplified value key instead of direct parent?
 		elseif typeof(k) == "number" and typeof(v) == "Instance" then
 			v.Parent = instance
+			children[k] = v
+
+		-- events
+		elseif isspecial(v) and v.__kind == "OnEvent" then
+			eventsused[k] = v
+			for _, event in v.__prop do
+				eventconnections[k] = applyEvent(instance, event, 
+					function(...) 
+						return v.__fn(self.Amplified, self, ...) 
+					end)
+			end
+
+		-- properties
 		else
-			-- properties
 			applyProperty(instance, k, v)
 		end
-		-- TODO: events
+	end
+
+	ref(amplified):Connect(connection)
+	for k, v in amplified() do
+		-- incase it was an event
+		const updater = ref(amplified)[k]
+
+		if updater ~= eventsused[k] then
+			if eventconnections[k] then 
+				eventconnections[k]:Disconnect()
+				eventconnections[k] = nil
+			end
+			if isspecial(updater) and updater.__kind == "OnEvent" then
+				apply(k, updater)
+			end
+		end
+
+		-- incase it was a child
+		if children[k] then 
+			children[k].Parent = nil
+			children[k] = nil
+		end
+
+		apply(k, v)
 	end
 
 	-- misc
@@ -433,8 +577,24 @@ Antera.Mount = function<S, T>(container: S, instance: Instance, amplified: (T & 
 		table.insert(container, self)
 	end
 
+	ref(amplified).Mounted:Fire(self)
+
 	return self
 end
+
+--[[
+	A SpecialValue that, when included in `Antera.New` with a key, makes the new instance a child.
+	<br>This allows you to create child instances with keys to reference them.
+	```luau
+	Antera:GUI "Main" {
+		Button = Antera:New "TextButton" {
+			Antera.Child,
+			Size = UDim2.fromScale(1, 1)
+		}
+	}
+	```
+]]
+Antera.Child = newspecial<<"Child">>("Child", "None", "None" :: any)
 
 Antera.ForSet = function<S, T>(container: S, ...: string)
 	local prop = { ... }
@@ -451,8 +611,21 @@ end
 
 Antera.OnSet = function<S, T>(container: S, ...: string)
 	local prop = { ... }
-	return function(fn: fn): SpecialValue<"OnSet">
-		local special = newspecial("OnSet" :: "OnSet", prop, fn)
+	return function(fn: fn, arg: any?): SpecialValue<"OnSet">
+		local special = newspecial("OnSet" :: "OnSet", prop, fn, arg)
+
+		if container ~= Antera then
+			table.insert(container, special)
+		end
+
+		return special
+	end
+end
+
+Antera.OnEvent = function<S, T>(container: S, ...: string)
+	local prop = { ... }
+	return function(fn: fn, arg: any?): SpecialValue<"OnEvent">
+		local special = newspecial("OnEvent" :: "OnEvent", prop, fn, arg)
 
 		if container ~= Antera then
 			table.insert(container, special)
@@ -463,9 +636,9 @@ Antera.OnSet = function<S, T>(container: S, ...: string)
 end
 
 Antera.Amplify = function<S, T>(container: S, tab: T)
-	local VALUE: table = {}
+	const VALUE: table = {}
 
-	local self: any = Anex:State(VALUE)
+	const self: any = Anex:State(VALUE)
 
 	--[[
 		Custom Fire for Amplifieds; this will be removed with an Anex patch
@@ -478,16 +651,18 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 		return self
 	end
 
-	local UPDATERS: table<any, fn> = {}
-	local STATES: table<any, State> = {}
-	local ONSETS: table = {}
+	self.Mounted = Anex:Hook<<any>>(nil)
 
-	local AMPLIFIED = {}
+	const UPDATERS: table<any, fn> = {}
+	const STATES: table<any, State> = {}
+	const ONSETS: table = {}
 
-	local ___nindex = function(_, k: any, v: any)
+	const AMPLIFIED = {}
+
+	const ___nindex = function(_, k: any, v: any)
 		-- case 3: if v was a state/different state, disconnect it
 
-		local kstate = rawget(STATES, k)
+		const kstate = rawget(STATES, k)
 		if kstate then
 			kstate:Connect(UPDATERS[k])(nil)
 			STATES[k] = nil
@@ -498,17 +673,20 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 			st[k] = nil
 		end
 
-		local function nestval(key, val: any)
+		const function nestval(key, val: any)
 			val = ref(val)
 			-- case 1, if v is amplified table then the table value is passed to nestval
 			-- case 2, if v is a state
 			if isstate(nil, val) then
 				VALUE[key] = val()
 				STATES[key] = val
-				UPDATERS[key] = function<A..., R...>(...: A...): R...
+				UPDATERS[key] = val 
+				--[[ = function<A..., R...>(...: A...): R...
 					return nestval(key, val()) :: any
-				end
-				val:Connect(UPDATERS[key])
+				end]]
+				val:Connect(function<A..., R...>(...: A...): R...
+					return nestval(key, val()) :: any
+				end)
 
 				nestval(key, val())
 				return
@@ -520,6 +698,7 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 					return nestval(key, val(AMPLIFIED)) :: any
 				end]]
 				nestval(key, val(AMPLIFIED))
+				UPDATERS[key] = val
 
 			-- case 9, if v is a mounted object then its passed forward
 			elseif ismounted(val) then
@@ -536,7 +715,7 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 			-- case 4, if v is ForSet is called immediately and via onsets and passes down a value
 			-- onevent and onchange can only be handled by alloy.mount so they are passed forwards
 			elseif isspecial(val) and val.__kind == "ForSet" then
-				local fn = function<A..., R...>(...: A...): R...
+				const fn = function<A..., R...>(...: A...): R...
 					return nestval(key, val.__fn(AMPLIFIED)) :: any
 				end
 
@@ -552,7 +731,7 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 			-- case 8, OnSet is called via onsets and passes no value
 			elseif isspecial(val) and ref(val).__kind == "OnSet" then
 				val = ref(val) --typechecking loses its mind
-				local fn = function<A..., R...>(...: A...): R...
+				const fn = function<A..., R...>(...: A...): R...
 					return nestval(key, val.__fn(AMPLIFIED)) :: any
 				end
 
@@ -562,8 +741,22 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 				end
 
 				-- turning OnSet into effect:
+				UPDATERS[key] = val.__fn
+				nestval(key, val.__arg) --__arg implementation (value after __fn)
 				UPDATERS[key] = val.__fn --amp.val()
-				-- nil value originally
+
+			-- case 10, OnEvent requires a new fn for Mount (this is a hack)
+			elseif isspecial(val) and ref(val).__kind == "OnEvent" then
+				val = ref(val) --typechecking loses its mind again
+
+				nestval(key, val.__arg)
+
+				-- 2 different functions!
+				local fn = val.__fn
+				UPDATERS[key] = val --fn
+				val.__fn = function<A..., R...>(...: A...): R...
+					return nestval(key, fn(AMPLIFIED, ...)) :: any --uses ...
+				end
 
 			-- case 7, v is a table (nestval each key, value pair)
 			elseif not isspecial(ref(val)) and typeof(val) == "table" then
@@ -575,6 +768,7 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 				end
 
 			-- case 5, if its anything else: instance, number, vector3, etc.
+			-- Antera.OnEvent, Antera.OnChange go here
 			else
 				VALUE[key] = val
 
@@ -591,7 +785,9 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 	end
 
 	self.Update = function(self: Amplified<T>, key: any): any
-		return UPDATERS[key] and ___nindex(nil, key, UPDATERS[key]())
+		const updater = UPDATERS[key]
+		return if updater and typeof(updater) == "function" then ___nindex(nil, key, UPDATERS[key]())
+			elseif updater and typeof(updater) == "table" then ___nindex(nil, key, updater) else nil
 	end
 
 	self.NonKey = function(self: Amplified<T>, value: any): any
@@ -627,6 +823,40 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 			return ___nindex(nil, key, val)
 		end,
 	})
+
+	--[[
+		the AMPLIFIED itself is an empty table {}; this is done to trick __newindex to be called for every key and value.
+		indexing AMPLIFIED will index self, which is a STATE merged with functions for Amplifieds.
+		newindexing AMPLIFIED will call ___nindex, a big function which will in the end update VALUE, the actual 
+		value of the STATE and the amplified.
+		if the index is not in self, the STATE, then STATES are indexed.
+		STATES is also the VALUE table (for keys=values) except the values are necessarily states, this is left after
+		___nindex when the value is a state. 
+		STATES are needed to acquire states when indexing the amplified: Amp.SomeState().
+		in turn, the actual values of states are in VALUE, gotten in the same way as a STATE, via __call: Amp().SomeState.
+		if the value wasn't found in STATES, UPDATERS are indexed.
+		UPDATERS is the table of functions, serving the same purpose as STATES.
+		via UPDATERS you can reference functions added to the amplified: Amp.SomeFunc() or their actual value from VALUE: Amp().SomeFunc.
+		and finally, if the key isn't in UPDATERS, VALUE is indexed; this is for some trivial keys like `Key = 10`
+
+		___nindex changes:
+		- 1. trivial values are set normally
+		- 2. functions are called, their return value is set normally
+		- 3. states or amplified tables are set in STATES, their actual value is set normally, and they are connected to set normally
+		- 4. tables (including when amplifieds are set normally) set normally all of their key-value pairs (they are "merged")
+		- 5. OnSet and ForSet are set in ONSETS to be updated when their specified keys are set normally
+
+		CAVEATS AND IMPROVEMENTS:
+		- merge STATES and UPDATERS because they serve one purpose
+		- allow tables into UPDATERS
+		- Antera.NoMerge special value to be included in tables to avoid merging
+		- Antera.Nil special value for merged table keys since nil values just aren't merged
+		- Support for hooks, this was missed because Anex lacks Anex:IsHook()
+		- Support for :Setter, this will modify keys and values set
+		- Antera.OnMount for values that need the instance
+		- Antera.Ignore for functions not to be called, tables not to be merged?
+		- OnSet and ForSet should be called with the key that changed and value of it
+	]]
 
 	local next__order: any = {} --[number]: table -- various tables of the next order within the same order
 
@@ -680,4 +910,4 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 	return AMPLIFIED
 end :: AmplifiedConstructor
 
-return Antera
+return table.freeze(Antera)
