@@ -1,6 +1,5 @@
 --!strict
 --!optimize 2
---!native
 
 --[[
     ANTERA: Reactive UI Framework for the Allure Ecosystem
@@ -25,18 +24,49 @@ const VERSION = "1.0.0"
 -- CONFIG
 
 const CONFIG = table.freeze {
+	--[[
+		Whether to make a warning when Antera detects a wrong type of value
+		passed for a property of an instance, and whether to change it regardless
+	]]
 	WarnWrongPropertyTypes = true,
 	WriteWrongPropertyTypes = false,
 
+	--[[
+		Whether to make a warning when Antera detects an attempt to change a 
+		read-only property, and whether to change it regardless
+	]]
 	WarnReadonlyProperties = true,
 	WriteReadonlyProperties = false,
 
+	--[[
+		Whether to make a warning when Antera detects an attempt to change a 
+		write-only property, and whether to change it regardless
+	]]
 	WarnWriteonlyProperties = true,
 	WriteWriteonlyProperties = true,
 
+	--[[
+		Whether to make a warning when a nonexistent event was passed to Antera:OnEvent
+		Whether to look for and warn corrections, for example Clicked --> MouseButton1Click
+		Whether to correct it, if corrections were found
+	]]
 	WarnWrongEvents = true,
+	WarnConfusableEvents = true,
+	FixConfusableEvents = true,
+
+	--[[
+		Whether to make a warning when Antera detects an event that has an abnormal Listen permit
+		Whether to try and listen (conect) to it regardless
+	]]
 	WarnUnlistenableEvents = true,
 	ConnectUnlistenableEvents = true,
+
+	--[[
+		Whether to make a warning when Antera detects a property that could be a typo or mistake
+		Whether to automatically correct it
+	]]
+	WarnConfusableProperties = true,
+	FixConfusableProperties = false,
 
 	-- The path to a modulescript returning a table of
 	-- {ClassName = {Property = Value}} defaults for Antera.New
@@ -79,7 +109,7 @@ const Templates = if CONFIG.MountTemplates then require(CONFIG.MountTemplates) :
 
 Log.ErrorAssert(
 	true,
-	script :: any == nil or ((script and script.Parent ~= nil) and (script.Parent:FindFirstChild "Anex" ~= nil)),
+	(script :: any == nil) or ((script and script.Parent ~= nil) and (script.Parent:FindFirstChild "Anex" ~= nil)),
 	"Anex is required but wasn't found. Make sure Antera and Anex are in the same directory."
 )
 const Anex = require (script.Parent.Anex) --"../Anex/src" --
@@ -137,10 +167,15 @@ export type Amplified<T = table> = setmetatable<
 		--[[
 			Desc
 		]]
-		Mounted: Anex.Hook<Mounted<T>>
+		Mounted: Anex.Hook<Mounted<T>>,
+
+		--[[
+			Desc
+		]]
+		__Updaters: { [any]: fn | table },
 	}, {
 		__index: setmetatable<
-			{ [any]: fn }, --UPDATERS
+			{ [any]: fn | table }, --UPDATERS
 			{ __index: setmetatable<
 				{ [string]: State }, --STATES
 				{
@@ -211,11 +246,13 @@ const function reftail<T...>(...:T...): ...any
 end
 
 --- Returns true if `t` is a specialValue table and false if not
+@native
 const function isspecial(t: any): boolean
 	return (typeof(t) == "table" and t.__kind and t.__prop and t.__fn) and true or false
 end
 
 --- For amplifieds, returns the next numeric key (non-key)
+@native
 const function nextnumerickey(t: table): number
 	local maxi = -1
 	for k, v in pairs(t) do
@@ -227,14 +264,9 @@ const function nextnumerickey(t: table): number
 end
 
 const isstate = Anex.IsState
-const statify = Anex.Statify
-
---- Returns a clear value: if given a state, returns it's value, if not, returns the value itself
-const function valuefy<T>(t: State<T> | T): T
-	return if isstate(nil, t) then ref(t)() else t
-end
 
 --- Returns true if the value is a state and an amplified, and false if not
+@native
 const function isamplified<T>(t: T): boolean
 	return (typeof(t) == "table" and isstate(nil, t) and getmetatable(t) and ref(getmetatable(t)).__amp == true)
 			and true
@@ -242,10 +274,12 @@ const function isamplified<T>(t: T): boolean
 end
 
 --- Returns true if the value is a mounted object, and false if not
+@native
 const function ismounted<T>(t: T & table): boolean
 	return (typeof(t) == "table" and not isstate(nil, t) and t.Instance and t.Amplified and t.Destroy) and true or false
 end
 
+@native
 const function newspecial<K>(kind: K, prop: string | { string }, fn: fn, arg: any?): SpecialValue<K>
 	return {
 		__kind = kind,
@@ -260,6 +294,7 @@ const function newspecial<K>(kind: K, prop: string | { string }, fn: fn, arg: an
 end
 
 --- Deeply clones table `t`, ignoring inner tables only if they are states or SpecialValues
+@native
 const function deepClone(t: table)
 	const result = {}
 
@@ -276,6 +311,7 @@ const function deepClone(t: table)
 end
 
 --- Returns `true` if `v` is present in table `t`, and `false` if not
+@native
 const function hasValue(t: table, v: any)
 	for _, val in t do
 		if val==v then return true end
@@ -283,65 +319,136 @@ const function hasValue(t: table, v: any)
 	return false
 end
 
+-- Confusable events, properties and what to recommend
+-- i am doing this just because clickdetector just confused me and i dont want to open docs
+-- If you disable warnings and enable the Fix configs then these are aliases
+const ConfusableEvents = {
+	any = {
+		MouseButtonClick = "MouseButton1Click",
+		MouseClicked = "MouseButton1Click",
+		MouseClick = "MouseButton1Click",
+		OnClick = "MouseButton1Click",
+		onClick = "MouseButton1Click",
+		Click = "MouseButton1Click",
+		Clicked = "MouseButton1Click",
+		MouseHover = "MouseEnter",
+		Hovered = "MouseEnter",
+		MouseLeft = "MouseLeave",
+	},
+	ClickDetector = {
+		MouseButton1Click = "MouseClick",
+		MouseButtonClick = "MouseButton1Click",
+		Click = "MouseClick",
+		MouseClicked = "MouseClick",
+		OnClick = "MouseClick",
+		onClick = "MouseClick",
+		Clicked = "MouseClick",
+	}
+}
+const ConfusableProperties = {
+	UIAspectRatioConstraint = {
+		Ratio = "AspectRatio"
+	}
+}
+
+const function checkConfusableProperties(instanceClass: string, prop: string)
+	return if ConfusableProperties[instanceClass] then ConfusableProperties[instanceClass][prop] else nil
+end
+const function checkConfusableEvents(instanceClass: string, event: string)
+	return if ConfusableEvents[instanceClass] then ConfusableEvents[instanceClass][event] else ConfusableEvents.any[event]
+end
+
 -- tables of [classname] = {property = ReflectedProperty or ReflectedEvent} 
 -- are used to store and avoid repetitive ReflectionService api calls
 const ClassPropertiesMemo = {}
 const ClassEventsMemo = {}
 
-const function applyProperty(instance: Instance, prop: string, value: any?)
+const function applyProperty(instance: Instance, prop: string, value: any?): (...any?)
 	const ClassProperty: never = ClassPropertiesMemo[instance.ClassName][prop]
-	if not ClassProperty :: any then return end
+	if not ClassProperty :: any then 
+		const confused = checkConfusableProperties(instance.ClassName, prop)
+		if confused then 
+			Log.Warn(
+				string.format("Attempt to set nonexistent property '%s' on instance '%s' (%s).\n\tPerhaps you meant '%s'?", prop, instance.Name, instance.ClassName, confused)
+				.. (CONFIG.FixConfusableProperties and " Applying..." or "")
+			)
+		end
+		return (confused and CONFIG.FixConfusableProperties) and applyProperty(instance, confused, value) or nil  
+	end
 
 	const Write = ClassProperty.Permits.Write
 	const Read = ClassProperty.Permits.Read
 
-	if (Write and tostring(Write) ~= "" and tostring(Write) ~= "UI") or (RunService:IsServer() and tostring(Write) == "LocalUser") then 
+	if Write == Enum.SecurityCapability.InternalTest or Write == Enum.SecurityCapability.RobloxEngine or (RunService:IsServer() and tostring(Write) == "LocalUser") then 
 		Log.WarnAssert(CONFIG.WarnReadonlyProperties, false, 
-			string.format("WarnReadonlyProperties: Cannot set the property %s on instance %s (%s) to %s: it is read-only.", 
+			string.format("WarnReadonlyProperties: Cannot set the property '%s' on instance '%s' (%s) to %s: it is read-only.", 
 			prop, instance.Name, instance.ClassName, tostring(value))
 		)
-		if not CONFIG.WriteReadonlyProperties then return end
+		if not CONFIG.WriteReadonlyProperties then return nil end
 	end
 
-	if (Read and tostring(Read) ~= "" and tostring(Read) ~= "UI") or (RunService:IsServer() and tostring(Read) == "LocalUser") then 
+	if Read == Enum.SecurityCapability.InternalTest or Read == Enum.SecurityCapability.RobloxEngine or (RunService:IsServer() and tostring(Read) == "LocalUser") then 
 		Log.WarnAssert(CONFIG.WarnWriteonlyProperties, false, 
-			string.format("WarnWriteonlyProperties: The property %s on instance %s (%s) is write-only.", 
+			string.format("WarnWriteonlyProperties: The property '%s' on instance '%s' (%s) is write-only.", 
 			prop, instance.Name, instance.ClassName)
 		)
-		if not CONFIG.WriteWriteonlyProperties then return end
+		if not CONFIG.WriteWriteonlyProperties then return nil end
 	end
 
 	if typeof(value) ~= ClassProperty.Type.ScriptType then
 		-- exception: roblox automatically converts numbers into strings
 		if typeof(value) == "number" and ClassProperty.Type.ScriptType == "string" then
 			ref(instance)[prop] = value 
-			return
+			return nil
 		end
 		Log.WarnAssert(CONFIG.WarnWrongPropertyTypes, false, 
-			string.format("WarnWrongPropertyTypes: Attempt to set the property %s on instance %s (%s) to %s (%s); expected %s", 
+			string.format("WarnWrongPropertyTypes: Attempt to set the property '%s' on instance '%s' (%s) to %s (%s); expected %s", 
 			prop, instance.Name, instance.ClassName, tostring(value), typeof(value), ClassProperty.Type.ScriptType)
 		)
-		if not CONFIG.WriteWrongPropertyTypes then return end
+		if not CONFIG.WriteWrongPropertyTypes then return nil end
 	end
 
 	ref(instance)[prop] = value
 end
 
-const function applyEvent(instance: Instance, event: string, fn: fn)	
+const function applyEvent(instance: Instance, event: string, fn: fn): RBXScriptConnection?
 	const ClassEvent: never = ClassEventsMemo[instance.ClassName][event]
-	if not ClassEvent :: any then return end
+	if not ClassEvent :: any then 
+		const confused = checkConfusableEvents(instance.ClassName, event)
+		Log.Warn(string.format(
+			"Attempt to connect to a nonexistent event '%s' on instance '%s' (%s)", 
+			event, instance.Name, instance.ClassName) 
+			.. (confused and string.format("\n\tPerhaps you meant '%s'?", confused) or "")
+			.. (CONFIG.FixConfusableEvents and " Applying..." or "")
+		)
+		return (confused and CONFIG.FixConfusableEvents) and applyEvent(instance, confused, fn) or nil 
+	end
 
 	const Listen = ClassEvent.Permits.Listen
 
-	if (Listen and tostring(Listen) ~= "" and tostring(Listen) ~= "UI") or (RunService:IsServer() and tostring(Listen) == "LocalUser") then 
+	if Listen == Enum.SecurityCapability.InternalTest or Listen == Enum.SecurityCapability.RobloxEngine or (RunService:IsServer() and tostring(Listen) == "LocalUser") then 
 		Log.WarnAssert(CONFIG.WarnUnlistenableEvents, false, 
-			string.format("WarnUnlistenableEvents: The event %s on instance %s (%s) cannot be listened to.", 
+			string.format("WarnUnlistenableEvents: The event '%s' on instance '%s' (%s) cannot be listened to.", 
 			event, instance.Name, instance.ClassName)
 		)
-		if not CONFIG.ConnectUnlistenableEvents then return end
+		warn(Listen, ClassEvent.Permits)
+		if not CONFIG.ConnectUnlistenableEvents then return nil end
 	end
 
 	return ref(instance)[event]:Connect(fn)
+end
+
+const function applyChangeEvent(instance: Instance, prop: string, fn: fn): RBXScriptConnection?
+	const ClassProperty: never = ClassPropertiesMemo[instance.ClassName][prop]
+	if not ClassProperty :: any then 
+		Log.Warn(string.format(
+			"Attempt to connect to a GetPropertyChangedSignal for a nonexistent property '%s' on instance '%s' (%s)", 
+			prop, instance.Name, instance.ClassName)
+		)
+		return nil
+	end
+	
+	return instance:GetPropertyChangedSignal(prop):Connect(fn)
 end
 
 ------------
@@ -468,15 +575,13 @@ Antera.Mount = function<S, T>(container: S, instance: Instance, amplified: (T & 
 	end
 	amplified = amplified :: Amplified<T>
 
-	const connection = function(self, k, v)
-		applyProperty(instance, k, v)
-	end
+	local connection = nil :: never
 
 	-- storage for OnEvent connections
 	const eventconnections: {[any]: RBXScriptConnection} = {}
 
 	-- memo for OnEvents, not to reconnect each time the events update
-	const eventsused: {[any]: SpecialValue<"OnEvent">} = {}
+	const eventsused: {[any]: SpecialValue<"OnEvent"> | SpecialValue<"OnChange">} = {}
 
 	-- memo to unparent children once the value changes
 	const children: {[any]: Instance} = {}
@@ -537,7 +642,19 @@ Antera.Mount = function<S, T>(container: S, instance: Instance, amplified: (T & 
 			for _, event in v.__prop do
 				eventconnections[k] = applyEvent(instance, event, 
 					function(...) 
-						return v.__fn(self.Amplified, self, ...) 
+						return v.__fn(self, ...) --amplified is already specified as the first argument, this marks second as the mounted
+					end)
+			end
+
+		-- onChange
+		elseif isspecial(v) and ref(v).__kind == "OnChange" then
+			v = ref(v) --typechecking loses its mind after the first elseif
+
+			eventsused[k] = v
+			for _, event in v.__prop do
+				eventconnections[k] = applyChangeEvent(instance, event, 
+					function(...)
+						return v.__fn(self, ...) --amplified is already specified as the first argument, this marks second as the mounted
 					end)
 			end
 
@@ -547,20 +664,21 @@ Antera.Mount = function<S, T>(container: S, instance: Instance, amplified: (T & 
 		end
 	end
 
-	ref(amplified):Connect(connection)
-	for k, v in amplified() do
+	connection = function(_, k, v)
 		-- incase it was an event
-		const updater = ref(amplified)[k]
+		const updater = rawget(ref(amplified).__Updaters, k)
 
 		if updater ~= eventsused[k] then
 			if eventconnections[k] then 
 				eventconnections[k]:Disconnect()
 				eventconnections[k] = nil
 			end
-			if isspecial(updater) and updater.__kind == "OnEvent" then
+			if isspecial(updater) and (updater.__kind == "OnEvent" or updater.__kind == "OnChange") then
 				apply(k, updater)
 			end
 		end
+
+		if updater == v then return end
 
 		-- incase it was a child
 		if children[k] then 
@@ -569,6 +687,15 @@ Antera.Mount = function<S, T>(container: S, instance: Instance, amplified: (T & 
 		end
 
 		apply(k, v)
+	end
+
+	ref(amplified):Connect(connection)
+	for k, v in amplified() do
+		connection(nil, k, v)
+	end
+	for k, v in ref(amplified).__Updaters do
+		if amplified()[k] then continue end
+		connection(nil, k, v)
 	end
 
 	-- misc
@@ -611,8 +738,8 @@ end
 
 Antera.OnSet = function<S, T>(container: S, ...: string)
 	local prop = { ... }
-	return function(fn: fn, arg: any?): SpecialValue<"OnSet">
-		local special = newspecial("OnSet" :: "OnSet", prop, fn, arg)
+	return function(fn: (self: Amplified) -> any?, arg: any?): SpecialValue<"OnSet">
+		local special = newspecial("OnSet" :: "OnSet", prop, fn :: fn, arg)
 
 		if container ~= Antera then
 			table.insert(container, special)
@@ -624,8 +751,21 @@ end
 
 Antera.OnEvent = function<S, T>(container: S, ...: string)
 	local prop = { ... }
-	return function(fn: fn, arg: any?): SpecialValue<"OnEvent">
-		local special = newspecial("OnEvent" :: "OnEvent", prop, fn, arg)
+	return function(fn: (self: Amplified, mounted: Mounted, ...any) -> any?, arg: any?): SpecialValue<"OnEvent">
+		local special = newspecial("OnEvent" :: "OnEvent", prop, fn :: fn, arg)
+
+		if container ~= Antera then
+			table.insert(container, special)
+		end
+
+		return special
+	end
+end
+
+Antera.OnChange = function<S, T>(container: S, ...: string)
+	local prop = { ... }
+	return function(fn: (self: Amplified, mounted: Mounted, ...any) -> any?, arg: any?): SpecialValue<"OnChange">
+		local special = newspecial("OnChange" :: "OnChange", prop, fn :: fn, arg)
 
 		if container ~= Antera then
 			table.insert(container, special)
@@ -658,6 +798,8 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 	const ONSETS: table = {}
 
 	const AMPLIFIED = {}
+
+	self.__Updaters = UPDATERS
 
 	const ___nindex = function(_, k: any, v: any)
 		-- case 3: if v was a state/different state, disconnect it
@@ -745,14 +887,15 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 				nestval(key, val.__arg) --__arg implementation (value after __fn)
 				UPDATERS[key] = val.__fn --amp.val()
 
-			-- case 10, OnEvent requires a new fn for Mount (this is a hack)
-			elseif isspecial(val) and ref(val).__kind == "OnEvent" then
+			-- case 10, OnEvent and OnChange require a new fn for Mount (this is a hack)
+			elseif isspecial(val) and (ref(val).__kind == "OnEvent" or ref(val).__kind == "OnChange") then
 				val = ref(val) --typechecking loses its mind again
 
 				nestval(key, val.__arg)
 
 				-- 2 different functions!
-				local fn = val.__fn
+				const fn = val.__fn
+
 				UPDATERS[key] = val --fn
 				val.__fn = function<A..., R...>(...: A...): R...
 					return nestval(key, fn(AMPLIFIED, ...)) :: any --uses ...
