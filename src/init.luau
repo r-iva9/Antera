@@ -25,6 +25,15 @@ const VERSION = "1.0.0"
 
 const CONFIG = table.freeze {
 	--[[
+		Frequency of spring updates in the spring solver
+		the `k` spring constant
+		and a speed coefficient
+	]]
+	SpringRateHZ = 80,
+	SpringConstant = 3,
+	SpringSpeedCoefficient = 1,
+
+	--[[
 		Whether to make a warning when Antera detects a wrong type of value
 		passed for a property of an instance, and whether to change it regardless
 	]]
@@ -203,6 +212,63 @@ export type Mounted<T = table> = {
 	Destroy: <A...>(A...) -> ()
 }
 
+--[[
+	Internal spring that updates a single number value
+]]
+type SpringProcess = {
+	Goal: number,
+	Value: number,
+	Velocity: number,
+	Force: number,
+	CriticalDamping: number, --derived
+	Damping: number,
+	Speed: number,
+
+	Step: (SpringProcess?) -> any,
+	Close: (...any) -> (),
+
+	Remove: (...any) -> (),
+	Add: (...any) -> (),
+
+	SetSpeed: (SpringProcess, number) -> (),
+	SetDamping: (SpringProcess, number) -> (),
+	SetGoal: (SpringProcess, number) -> (),
+}
+
+export type Animatable = 
+	number |
+	string |
+	table | --this is an unsupported type, if i leave this commented the type solver bugs out lol
+	Vector2 |
+	Vector2int16 |
+	Vector3 |
+	Vector3int16 |
+	UDim |
+	UDim2 |
+	Rect |
+	Color3 |
+	--ColorSequence | --antera plans to support these and table soon, as of the moment i am lazy and tired
+	--NumberSequence |
+	ColorSequenceKeypoint |
+	CFrame
+
+
+export type Spring<T = any> = State<T> & {
+	Velocity: T,
+	Goal: T,
+	Damping: number,
+	Speed: number,
+
+	Detach: (...any) -> (),
+	Attach: (...any) -> (),
+
+	SetDamping: (Spring<T>, damping: number) -> (),
+	SetSpeed: (Spring<T>, speed: number) -> (),
+	SetGoal: (Spring<T>, goal: T) -> (),
+
+	Update: (...any) -> (),
+}
+
 type AnteraValue<T> = index<typeof(Antera) & {[any]: never}, T>
 type AnexValue<T> = index<typeof(Anex) & table, T>
 
@@ -230,6 +296,40 @@ type function importTail(t: type, index: type)
 	end
 
 	return types.any
+end
+
+------------
+-- SPRING SOLVER
+
+const SpringProcesses: {[SpringProcess]: true} = {}
+const Springs: {[Spring]: true} = {}
+
+do
+	local t = 0
+	const hz = CONFIG.SpringRateHZ
+
+	RunService.Heartbeat:Connect(function(dt)
+		task.defer(function()
+			debug.profilebegin(`[Antera] Spring Solver (per spring updates: {math.floor((t+dt)*hz)})`)
+			t += dt
+			
+			while t > 1/hz do
+				-- step each SpringProcess, SpringProcesses update a coordinate each in data,
+				-- Vector3 for example, instead of converting back and forth
+				for sp in SpringProcesses do
+					sp.Step()
+				end
+				t -= 1/hz
+			end
+
+			-- update each Spring, now that springprocesses have made a step each
+			for sp in Springs do
+				sp:Update()
+			end
+
+			debug.profileend()
+		end)
+	end)
 end
 
 ------------
@@ -291,6 +391,127 @@ const function newspecial<K>(kind: K, prop: string | { string }, fn: fn, arg: an
 			self = nil
 		end,
 	}
+end
+
+const function springprocess(value: number, damping: number, speed: number): SpringProcess
+	const k = CONFIG.SpringConstant
+	speed *= CONFIG.SpringSpeedCoefficient
+
+	local self = {
+		Goal = value,
+		Value = value,
+		Velocity = 0,
+		Force = 0,
+		CriticalDamping = 2*math.sqrt(k),
+		Damping = damping*2*math.sqrt(k),
+		Speed = speed,
+	}
+
+	local delta = self.Goal - self.Value
+
+	self.SetSpeed = function(_: SpringProcess, speed: number)
+		speed *= CONFIG.SpringSpeedCoefficient
+		self.Speed = speed
+		self.CriticalDamping = 2*math.sqrt(k*speed)
+		self.Damping = self.CriticalDamping*self.Damping
+	end
+
+	self.SetDamping = function(_: SpringProcess, damping: number)
+		self.Damping = self.CriticalDamping*damping
+	end
+
+	self.SetGoal = function(_: SpringProcess, goal: number)
+		self.Goal = goal
+		delta = self.Goal - self.Value
+		self:Add()
+	end
+
+	self.Remove = function()
+		SpringProcesses[self] = nil
+	end
+
+	self.Add = function()
+		SpringProcesses[self] = true
+	end
+
+	self.Step = function(_: SpringProcess?)
+		local x = self.Goal - self.Value
+
+		if self.Value == self.Goal then self:Remove(); return self.Value
+		elseif math.abs(x) < 0.01*math.abs(delta) and math.abs(self.Force * self.Speed) < 4*1e-4*math.abs(delta) then
+			warn("hahaha", self.Goal, self.Value, x, 0.01*delta)
+			self.Value = self.Goal
+			self.Force = 0
+			self.Velocity = 0
+			self:Remove() --remove the spring from the spring solver, this self-optimizes
+
+			return self.Value
+		end
+
+		const dt = 1 / CONFIG.SpringRateHZ
+
+		--[[
+			F = -kx = ma
+			having m = 1:
+			F = -kx = a
+			a = -kx
+
+			x = goal - value
+			value += a <=> value += -k(goal - value)
+
+			delta v = Ft/m = Ft
+			delta pos = v*t
+		]]
+
+		self.Force = k*x
+		self.Velocity += self.Force * dt * self.Speed --speed appearance
+
+		self.Value += self.Velocity * dt
+
+		-- damping force Fd = -cv
+		-- delta v = Fd*t
+		const dampingForce = -self.Damping*self.Velocity
+		self.Velocity += dampingForce*dt
+
+		return self.Value
+	end
+
+	self.Close = function(...)
+		self:Remove()
+		table.clear(self)
+		self = nil :: never
+	end
+
+	--SpringProcesses[self] = true --no need for value == goal
+
+	return self
+end
+
+const function generateSprings(self: Spring, springs: {SpringProcess}, damping: number, speed: number, goals: (any) -> ...any, update: (...any) -> any, ...: any)
+	const values = {...}
+	for i=1, #values do
+		springs[i] = springprocess(values[i], damping, speed)
+	end
+
+	self:Setter(function(_, value)
+		self.Goal = value
+		const goals = {goals(value)}
+		for i=1, #goals do
+			springs[i]:SetGoal(goals[i])
+		end
+
+		self:Attach()
+		return self()
+	end)
+
+	function self:Update(...)
+		self.Val = update(unpack(springs))
+		self:Fire(self.Val)
+
+		if self.Val == self.Goal then
+			self:Detach()
+		end
+	end
 end
 
 --- Deeply clones table `t`, ignoring inner tables only if they are states or SpecialValues
@@ -484,6 +705,163 @@ Antera.Import = function<S, T>(
 	end
 
 	return reftail(table.unpack(args))
+end
+
+Antera.Spring = function<S, T>(container: S, value: Animatable & T, damping: number, speed: number): Spring<T>
+	container = if container ~= Anex and container ~= Antera then container else nil
+	const self: Spring = Anex.State(container, value) :: any
+
+	self.Speed = speed
+	self.Damping = damping
+	self.Goal = value
+	self.Velocity = 0
+
+	const springs: {SpringProcess} = {}
+
+	--generate springprocesses
+	if typeof(value) == "number" then
+		springs[1] = springprocess(value, damping, speed)
+		self:Setter(function(_, value)
+			self.Goal = value
+			springs[1]:SetGoal(value)
+			self:Attach()
+			return self()
+		end)
+	elseif typeof(value) == "Vector2" then
+		generateSprings(self, springs, damping, speed,
+			function(new) --goals
+				return new.X, new.Y
+			end,
+			function(x, y) --self:Update
+				return Vector2.new(x.Value, y.Value)
+			end,
+			value.X, value.Y) --start values
+	elseif typeof(value) == "Vector2int16" then
+		generateSprings(self, springs, damping, speed,
+			function(new) --goals
+				return new.X, new.Y
+			end,
+			function(x, y) --self:Update
+				return Vector2int16.new(x.Value, y.Value)
+			end,
+			value.X, value.Y) --start values
+	elseif typeof(value) == "Vector3" then
+		generateSprings(self, springs, damping, speed,
+			function(new) --goals
+				return new.X, new.Y, new.Z
+			end,
+			function(x, y, z) --self:Update
+				return Vector3.new(x.Value, y.Value, z.Value)
+			end,
+			value.X, value.Y, value.Z) --start values
+	elseif typeof(value) == "Vector3int16" then
+		generateSprings(self, springs, damping, speed,
+			function(new) --goals
+				return new.X, new.Y, new.Z
+			end,
+			function(x, y, z) --self:Update
+				return Vector3int16.new(x.Value, y.Value, z.Value)
+			end,
+			value.X, value.Y, value.Z) --start values
+	elseif typeof(value) == "UDim" then
+		generateSprings(self, springs, damping, speed,
+			function(new: UDim) --goals
+				return new.Scale, new.Offset
+			end,
+			function(scale, offset) --self:Update
+				return UDim.new(scale.Value, offset.Value)
+			end,
+			value.Scale, value.Offset) --start values
+	elseif typeof(value) == "UDim2" then
+		generateSprings(self, springs, damping, speed,
+			function(new: UDim2) --goals
+				return new.X.Scale, new.X.Offset, new.Y.Scale, new.Y.Offset
+			end,
+			function(xscale, xoffset, yscale, yoffset) --self:Update
+				return UDim2.new(xscale.Value, xoffset.Value, yscale.Value, yoffset.Value)
+			end,
+			value.X.Scale, value.X.Offset, value.Y.Scale, value.Y.Offset) --start values
+	elseif typeof(value) == "Rect" then
+		generateSprings(self, springs, damping, speed,
+			function(new: Rect) --goals
+				return new.Min, new.Max
+			end,
+			function(min, max) --self:Update
+				return Rect.new(min.Value, max.Value)
+			end,
+			value.Min, value.Max) --start values
+	elseif typeof(value) == "Color3" then
+		generateSprings(self, springs, damping, speed,
+			function(new: Color3) --goals
+				return new.R, new.G, new.B
+			end,
+			function(R, G, B) --self:Update
+				return Color3.new(R.Value, G.Value, B.Value)
+			end,
+			value.R, value.G, value.B) --start values
+	elseif typeof(value) == "ColorSequenceKeypoint" then
+		generateSprings(self, springs, damping, speed,
+			function(new: ColorSequenceKeypoint) --goals
+				return new.Time, new.Value.R, new.Value.G, new.Value.B
+			end,
+			function(Time, R, G, B) --self:Update
+				return ColorSequenceKeypoint.new(Time.Value, Color3.new(R.Value, G.Value, B.Value))
+			end,
+			value.Time, value.Value.R, value.Value.G, value.Value.B) --start values
+	elseif typeof(value) == "CFrame" then
+		generateSprings(self, springs, damping, speed,
+			function(new: CFrame) --goals
+				return new.X, new.Y, new.Z, 
+					new.LookVector.X, new.LookVector.Y, new.LookVector.Z, 
+					new.UpVector.X, new.UpVector.Y, new.UpVector.Z
+			end,
+			function(posX, posY, posZ, lookatX, lookatY, lookatZ, upX, upY, upZ) --self:Update
+				return CFrame.lookAt(
+					Vector3.new(posX.Value, posY.Value, posZ.Value), 
+					Vector3.new(lookatX.Value, lookatY.Value, lookatZ.Value),
+					Vector3.new(upX.Value, upY.Value, upZ.Value)
+				)
+			end,
+			value.X, value.Y, value.Z, 
+			value.LookVector.X, value.LookVector.Y, value.LookVector.Z, 
+			value.UpVector.X, value.UpVector.Y, value.UpVector.Z) --start values
+
+			-- FIXME: position is alright, they're pointing in different directions
+	end
+
+	self:Deleter(function()
+		for _, spring in springs do
+			spring.Close()
+		end
+	end)
+
+	function self:SetDamping(damping: number)
+		self.Damping = damping
+		for i=1, #springs do
+			springs[i]:SetDamping(damping)
+		end
+	end
+
+	function self:SetSpeed(speed: number)
+		self.Speed = speed
+		for i=1, #springs do
+			springs[i]:SetSpeed(speed)
+		end
+	end
+
+	function self:Attach(...)
+		Springs[self] = true
+	end
+
+	function self:Detach(...)
+		Springs[self] = nil
+	end
+
+	function self:SetGoal(goal: T)
+		self(goal)
+	end
+
+	return self
 end
 
 Antera.IsMountedObj = function<S, T>(self: S, t: T): boolean
