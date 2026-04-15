@@ -275,13 +275,29 @@ export type Spring<T = any> = State<T> & {
 	Damping: number,
 	Speed: number,
 
+	--[[
+		Desc
+	]]
 	Detach: (...any) -> (),
+
+	--[[
+		Desc
+	]]
 	Attach: (...any) -> (),
 
 	SetDamping: (Spring<T>, damping: number) -> (),
 	SetSpeed: (Spring<T>, speed: number) -> (),
 	SetGoal: (Spring<T>, goal: T) -> (),
 
+	--[[
+		Desc
+		Sets goal in `sec` seconds to `goal` if the `goal` remains unchanged during this time
+	]]
+	DelayGoal: (Spring<T>, sec: number, goal: T) -> (),
+
+	--[[
+		Desc
+	]]
 	Update: (...any) -> (),
 }
 
@@ -318,7 +334,7 @@ end
 -- SPRING SOLVER
 
 const SpringProcesses: {[SpringProcess]: true} = {}
-const Springs: {[Spring]: true} = {}
+const Springs: {[any]: true} = {} --[spring]: true
 
 do
 	local t = 0
@@ -340,7 +356,6 @@ do
 
 			-- update each Spring, now that springprocesses have made a step each
 			for sp: any in Springs do
-				if not sp.Update then warn(sp, Springs[sp]) end
 				sp:Update()
 			end
 
@@ -587,7 +602,19 @@ const ConfusableEvents = {
 const ConfusableProperties = {
 	UIAspectRatioConstraint = {
 		Ratio = "AspectRatio"
-	}
+	},
+	UICorner = {
+		Radius = "CornerRadius",
+		Corner = "CornerRadius",
+		Ratio = "CornerRadius"
+	},
+	UIStroke = {
+		Stroke = "Thickness",
+		Color3 = "Color",
+		BrickColor = "Color",
+		BackgroundColor3 = "Color",
+		Mode = "ApplyStrokeMode",
+	},
 }
 
 const function checkConfusableProperties(instanceClass: string, prop: string)
@@ -886,6 +913,14 @@ Antera.Spring = function<S, T>(container: S, value: Animatable & T, damping: num
 
 	function self:SetGoal(goal: T)
 		self(goal)
+	end
+
+	function self:DelayGoal(sec: number, goal: T)
+		const prevgoal = self.Goal
+		task.delay(sec, function()
+			if self.Goal ~= prevgoal then return end
+			self(goal)
+		end)
 	end
 
 	return self
@@ -1413,8 +1448,7 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 	for k, v in pairs(tab) do
 		-- to avoid overriding nonkeys (this is needed even here because we don't know the order):
 		if typeof(k) == "number" and k <= CONFIG.AmplifiedMergeNonkeyLimit then
-			k = nextnumerickey(VALUE)
-			--warn(k)
+			k = nextnumerickey(VALUE) + #next__order
 		end
 
 		-- if v is a specialvalue, it's moved an order higher with a specific tag in the order table
@@ -1447,7 +1481,7 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 			for k, v in pairs(v0) do
 				-- to avoid overriding nonkeys:
 				if typeof(k) == "number" and k <= CONFIG.AmplifiedMergeNonkeyLimit then
-					k = nextnumerickey(VALUE)
+					k = nextnumerickey(VALUE) + #next__order
 				end
 
 				if isspecial(v) then
