@@ -27,11 +27,27 @@ const CONFIG = table.freeze {
 	--[[
 		Frequency of spring updates in the spring solver
 		the `k` spring constant
-		and a speed coefficient
+		and a speed coefficient for all springs created
 	]]
 	SpringRateHZ = 80,
 	SpringConstant = 3,
-	SpringSpeedCoefficient = 1,
+	SpringSpeedCoefficient = 4,
+
+
+	--[[
+		Last frame requirements (LFR) for (goal-value) delta and velocity
+		if the delta AND velocity*delta are lower than these values respectively,
+		the spring ends it's work and sets value to goal, making it the last frame of the spring animation
+	]]
+	SpringLFRDelta = 0.01,
+	SpringLFRVelocity = 4*1e-4,
+
+	--[[
+		When merging amplifieds, nonkeyed values with (their actual numeric keys) lower or equal to this value,
+		Antera will upscale to the next lowest numeric nonkey of the bigger amplified so that nonkeyed values don't override
+		in short, care about this number only if you for some reason make numeric amplified keys
+	]]
+	AmplifiedMergeNonkeyLimit = 12,
 
 	--[[
 		Whether to make a warning when Antera detects a wrong type of value
@@ -323,7 +339,8 @@ do
 			end
 
 			-- update each Spring, now that springprocesses have made a step each
-			for sp in Springs do
+			for sp: any in Springs do
+				if not sp.Update then warn(sp, Springs[sp]) end
 				sp:Update()
 			end
 
@@ -402,8 +419,8 @@ const function springprocess(value: number, damping: number, speed: number): Spr
 		Value = value,
 		Velocity = 0,
 		Force = 0,
-		CriticalDamping = 2*math.sqrt(k),
-		Damping = damping*2*math.sqrt(k),
+		CriticalDamping = 2*math.sqrt(k*speed),
+		Damping = damping*2*math.sqrt(k*speed),
 		Speed = speed,
 	}
 
@@ -438,8 +455,8 @@ const function springprocess(value: number, damping: number, speed: number): Spr
 		local x = self.Goal - self.Value
 
 		if self.Value == self.Goal then self:Remove(); return self.Value
-		elseif math.abs(x) < 0.01*math.abs(delta) and math.abs(self.Force * self.Speed) < 4*1e-4*math.abs(delta) then
-			warn("hahaha", self.Goal, self.Value, x, 0.01*delta)
+		elseif math.abs(x) < CONFIG.SpringLFRDelta*math.abs(delta) and math.abs(self.Force * self.Speed) < CONFIG.SpringLFRVelocity*math.abs(delta) then
+			-- end the spring if it's too close to the end and it's velocity is too little (last frame)
 			self.Value = self.Goal
 			self.Force = 0
 			self.Velocity = 0
@@ -542,7 +559,7 @@ end
 
 -- Confusable events, properties and what to recommend
 -- i am doing this just because clickdetector just confused me and i dont want to open docs
--- If you disable warnings and enable the Fix configs then these are aliases
+-- If you disable warnings and enable the Fix configs then these are aliases <<<<<<
 const ConfusableEvents = {
 	any = {
 		MouseButtonClick = "MouseButton1Click",
@@ -553,6 +570,7 @@ const ConfusableEvents = {
 		Click = "MouseButton1Click",
 		Clicked = "MouseButton1Click",
 		MouseHover = "MouseEnter",
+		MouseHovered = "MouseEnter",
 		Hovered = "MouseEnter",
 		MouseLeft = "MouseLeave",
 	},
@@ -591,7 +609,7 @@ const function applyProperty(instance: Instance, prop: string, value: any?): (..
 		if confused then 
 			Log.Warn(
 				string.format("Attempt to set nonexistent property '%s' on instance '%s' (%s).\n\tPerhaps you meant '%s'?", prop, instance.Name, instance.ClassName, confused)
-				.. (CONFIG.FixConfusableProperties and " Applying..." or "")
+				.. (confused and CONFIG.FixConfusableProperties and " Applying..." or "")
 			)
 		end
 		return (confused and CONFIG.FixConfusableProperties) and applyProperty(instance, confused, value) or nil  
@@ -640,7 +658,7 @@ const function applyEvent(instance: Instance, event: string, fn: fn): RBXScriptC
 			"Attempt to connect to a nonexistent event '%s' on instance '%s' (%s)", 
 			event, instance.Name, instance.ClassName) 
 			.. (confused and string.format("\n\tPerhaps you meant '%s'?", confused) or "")
-			.. (CONFIG.FixConfusableEvents and " Applying..." or "")
+			.. (confused and CONFIG.FixConfusableEvents and " Applying..." or "")
 		)
 		return (confused and CONFIG.FixConfusableEvents) and applyEvent(instance, confused, fn) or nil 
 	end
@@ -727,6 +745,14 @@ Antera.Spring = function<S, T>(container: S, value: Animatable & T, damping: num
 			self:Attach()
 			return self()
 		end)
+		function self:Update(...)
+			self.Val = springs[1].Value
+			self:Fire(self.Val)
+
+			if self.Val == self.Goal then
+				self:Detach()
+			end
+		end
 	elseif typeof(value) == "Vector2" then
 		generateSprings(self, springs, damping, speed,
 			function(new) --goals
@@ -812,7 +838,7 @@ Antera.Spring = function<S, T>(container: S, value: Animatable & T, damping: num
 		generateSprings(self, springs, damping, speed,
 			function(new: CFrame) --goals
 				return new.X, new.Y, new.Z, 
-					new.LookVector.X, new.LookVector.Y, new.LookVector.Z, 
+					new.X + new.LookVector.X, new.Y + new.LookVector.Y, new.Z + new.LookVector.Z, 
 					new.UpVector.X, new.UpVector.Y, new.UpVector.Z
 			end,
 			function(posX, posY, posZ, lookatX, lookatY, lookatZ, upX, upY, upZ) --self:Update
@@ -823,10 +849,11 @@ Antera.Spring = function<S, T>(container: S, value: Animatable & T, damping: num
 				)
 			end,
 			value.X, value.Y, value.Z, 
-			value.LookVector.X, value.LookVector.Y, value.LookVector.Z, 
+			value.X + value.LookVector.X, value.Y + value.LookVector.Y, value.Z + value.LookVector.Z, 
 			value.UpVector.X, value.UpVector.Y, value.UpVector.Z) --start values
 
 			-- FIXME: position is alright, they're pointing in different directions
+			-- FIXED: lookvector and lookat are different, the upvector is still relevant for accuracy
 	end
 
 	self:Deleter(function()
@@ -894,7 +921,7 @@ Antera.YieldForPlayer = function<S>(self: S): Player
 end
 
 --[[
-	Identical to `Antera.New`, except creates a `ScreenGui` under `LocalPlayer.PlayerGui` with the specified `name` and `ResetOnSpawn = false`
+	Identical to `Antera.New`, except creates a `ScreenGui` under `LocalPlayer.PlayerGui` with the specified `name`,<br>`ResetOnSpawn = false` and `IgnoreGuiInset = true`
 	```luau
 	Antera:GUI "Main" {
 		Button = Antera:New "TextButton" {
@@ -909,6 +936,7 @@ Antera.GUI = function<S>(container: S, name: string)
 		const instance = Instance.new("ScreenGui")
 		instance.Name = name
 		instance.ResetOnSpawn = false
+		instance.IgnoreGuiInset = true
 
 		const mounted = Antera.Mount(container, instance, amplified)
 
@@ -1282,7 +1310,7 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 			-- case 7, v is a table (nestval each key, value pair)
 			elseif not isspecial(ref(val)) and typeof(val) == "table" then
 				for k1, v1 in pairs(val) do
-					if typeof(k1) == "number" and k1 <= 15 then
+					if typeof(k1) == "number" and k1 <= CONFIG.AmplifiedMergeNonkeyLimit then
 						k1 = nextnumerickey(VALUE)
 					end
 					nestval(k1, v1)
@@ -1383,15 +1411,22 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 
 	-- reevaluating given values in the initial table
 	for k, v in pairs(tab) do
+		-- to avoid overriding nonkeys (this is needed even here because we don't know the order):
+		if typeof(k) == "number" and k <= CONFIG.AmplifiedMergeNonkeyLimit then
+			k = nextnumerickey(VALUE)
+			--warn(k)
+		end
+
 		-- if v is a specialvalue, it's moved an order higher with a specific tag in the order table
 		if isspecial(v) then
-			next__order[nextnumerickey(next__order)] = { k, v, __fromprev = true } --special values are automatically one order higher
+			next__order[#next__order + 1] = { k, v, __fromprev = true } --special values are automatically one order higher
 			continue
 		-- if it's just a table, then it's an order table and it should be moved up
 		elseif typeof(v) == "table" and not isstate(nil, v) and not ismounted(v :: any) then
-			next__order[k] = v
+			next__order[#next__order + 1] = v
 			continue
 		end
+
 		-- else it's a normal value
 		___nindex(nil, k :: any, v)
 	end
@@ -1410,11 +1445,16 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 			end
 
 			for k, v in pairs(v0) do
+				-- to avoid overriding nonkeys:
+				if typeof(k) == "number" and k <= CONFIG.AmplifiedMergeNonkeyLimit then
+					k = nextnumerickey(VALUE)
+				end
+
 				if isspecial(v) then
-					next__order[nextnumerickey(next__order)] = { k, v, __fromprev = true } --special values are automatically one order higher
+					next__order[#next__order + 1] = { k, v, __fromprev = true } --special values are automatically one order higher
 					continue
 				elseif typeof(v) == "table" and not isstate(nil, v) and not ismounted(v :: any) then
-					next__order[k] = v
+					next__order[#next__order + 1] = v
 					continue
 				end
 				___nindex(nil, k :: any, v)
