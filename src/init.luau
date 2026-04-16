@@ -129,6 +129,7 @@ const Log = {
 
 const ReflectionService = game:GetService("ReflectionService")
 const RunService = game:GetService("RunService")
+const Players = game:GetService("Players")
 
 const Templates = if CONFIG.MountTemplates then require(CONFIG.MountTemplates) :: table else {}
 
@@ -198,6 +199,8 @@ export type Amplified<T = table> = setmetatable<
 			Desc
 		]]
 		__Updaters: { [any]: fn | table },
+
+		Destroy: (...any?) -> (),
 	}, {
 		__index: setmetatable<
 			{ [any]: fn | table }, --UPDATERS
@@ -887,6 +890,7 @@ Antera.Spring = function<S, T>(container: S, value: Animatable & T, damping: num
 		for _, spring in springs do
 			spring.Close()
 		end
+		self:Detach()
 	end)
 
 	function self:SetDamping(damping: number)
@@ -939,14 +943,13 @@ Antera.IsSpecial = function<S, T>(self: S, t: T): boolean
 end
 
 --[[
-	A function to support starting the bootstrapper.<br>Returns the Players service and the LocalPlayer.
+	A function to support starting the bootstrapper.<br>Returns the LocalPlayer.
 	```luau
 	const Players, Player = Antera:YieldForPlayer()
 	```
 ]]
 Antera.YieldForPlayer = function<S>(self: S): Player
 	Log.ErrorAssert(true, RunService:IsClient(), "Attempt to call Antera:YieldForPlayer() on the server.")
-	const Players = game:GetService "Players"
 	const Player = Players.LocalPlayer
 
 	if Player then return Player end
@@ -1037,6 +1040,8 @@ Antera.Mount = function<S, T>(container: S, instance: Instance, amplified: (T & 
 			end
 			table.clear(eventconnections)
 			table.clear(children)
+
+			self.Instance.Parent = nil
 
 			table.clear(self)
 			self = nil :: never
@@ -1219,7 +1224,7 @@ end
 Antera.Amplify = function<S, T>(container: S, tab: T)
 	const VALUE: table = {}
 
-	const self: any = Anex:State(VALUE)
+	local self: any = Anex.State(container, VALUE)
 
 	--[[
 		Custom Fire for Amplifieds; this will be removed with an Anex patch
@@ -1232,7 +1237,11 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 		return self
 	end
 
-	self.Mounted = Anex:Hook<<any>>(nil)
+	self.Mounted = Anex.Hook<<any>>(container, nil)
+	const mounteds: {Mounted} = {}
+	self.Mounted:Connect(function(_, mounted)
+		mounteds[#mounteds+1] = mounted
+	end)
 
 	const UPDATERS: table<any, fn> = {}
 	const STATES: table<any, State> = {}
@@ -1243,10 +1252,11 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 	self.__Updaters = UPDATERS
 
 	const ___nindex = function(_, k: any, v: any)
+		if not self then return end
 		-- case 3: if v was a state/different state, disconnect it
 
 		const kstate = rawget(STATES, k)
-		if kstate then
+		if kstate and kstate.Connect then
 			kstate:Connect(UPDATERS[k])(nil)
 			STATES[k] = nil
 		end
@@ -1353,7 +1363,7 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 
 			-- case 5, if its anything else: instance, number, vector3, etc.
 			-- Antera.OnEvent, Antera.OnChange go here
-			else
+			elseif self and VALUE then
 				VALUE[key] = val
 
 				self:Fire(key :: any, val)
@@ -1375,9 +1385,24 @@ Antera.Amplify = function<S, T>(container: S, tab: T)
 	end
 
 	self.NonKey = function(self: Amplified<T>, value: any): any
-		local key = nextnumerickey(VALUE)
+		const key = nextnumerickey(VALUE)
 		___nindex(nil, key, value)
 		return key
+	end
+
+	self.Destroy = function(...)
+		for _, mounted in mounteds do
+			if not mounted.Amplified then continue end
+			mounted:Destroy()
+		end
+
+		--[[for k, v in VALUE do
+			___nindex(nil, k, nil)
+		end]] --not sure if this is needed: children and events are already disconnected by killing mounteds
+
+		task.wait()
+		table.clear(self)
+		self = nil :: never
 	end
 
 	setmetatable(self, {
