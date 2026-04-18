@@ -26,12 +26,12 @@ const VERSION = "1.0.0"
 const CONFIG = table.freeze {
 	--[[
 		Frequency of spring updates in the spring solver
-		the `k` spring constant
+		the `k` spring stiffness constant
 		and a speed coefficient for all springs created
 	]]
 	SpringRateHZ = 80,
-	SpringConstant = 3,
-	SpringSpeedCoefficient = 4,
+	SpringStiffness = 3,
+	SpringSpeedCoefficient = 5,
 
 
 	--[[
@@ -172,7 +172,31 @@ type Hook<T = any> = Anex.Hook<T>
 -- Special
 -- stylua: ignore
 --[[
-	Desc
+	An `Amplified` table. Amplified tables are tables integrated with reactive functionality<br>and fully suited for UI.
+	<br>Amplifieds represent an `Anex State` containing a table value. The amplified reference differs from the actual value returned by `TheAmplified()`
+
+	Within amplifieds, values of specific types are changed:
+	- ***functions*** are called immediately. The returned result is then
+		<br>the actual value of the key *(referenced via `TheAmplified().key`*,
+		<br>however the function is preserved and *referenced via `TheAmplified.key`*
+
+	- ***tables*** are merged with the amplified, having that all new values face the same treatment.
+		<br>The table can still be referenced via `TheAmplified.key` however the actual value will 
+		<br>be `nil` unless specified in the table itself.
+		
+		Nesting table values in the declaration will create ***orders***: second nest -- second order, and so on.
+		<br>This is purposed for race conditions appearing when a key needs an another key.
+
+	- ***Anex States*** are connected with the Amplified, the actual value is the state value.
+		<br>Changing the state changes the value in the Amplified and calls Amplified connections as well.
+		<br>The state is referenced via `TheAmplified.key`; the actual value of it via `TheAmplified().key`
+
+		Since the Amplified itself is a state, making a value Amplified will nest these changes.
+		<br>An amplified as a value will return it's table value, which is then merged,
+		<br>so including an amplified one in another will "merge" them. Updating the nested one will update the bigger one.
+		<br>The bigger one will always include keys of the nested one, unless changed otherwise.
+
+	Amplifieds have a multitude of utilities, such as `Antera.OnSet`, `Antera.Mount` or `Antera.OnEvent`.
 ]]
 export type Amplified<T = table> = setmetatable<
 {}, 
@@ -181,25 +205,32 @@ export type Amplified<T = table> = setmetatable<
 	__index: setmetatable<
 	State<T> & {
 		--[[
-			Desc
+			Update the value of a key if it's connected. Doing this with
+			- ***function values*** will call the function again and set the key to the returned value;
+			- ***state values*** will get the value from the state and set the key to it.
 		]]
 		Update: (self: Amplified<T>, key: any) -> any,
 		
 		--[[
-			Desc
+			Insert a new NonKey value into the Amplified.
 		]]
 		NonKey: (self: Amplified<T>, value: any) -> any,
 
 		--[[
-			Desc
+			A hook that fires connections with (amplified, mounted) whenever the amplified is mounted on an instance.
 		]]
 		Mounted: Anex.Hook<Mounted<T>>,
 
 		--[[
-			Desc
+			*DO NOT TOUCH THIS*: exposure of internal amplified updaters.
 		]]
 		__Updaters: { [any]: fn | table },
 
+		--[[
+			Destroy the Amplified, doing this will
+			- eliminate all mounted objects of this amplified
+			- eliminate all event connections made
+		]]
 		Destroy: (...any?) -> (),
 	}, {
 		__index: setmetatable<
@@ -218,6 +249,12 @@ export type Amplified<T = table> = setmetatable<
 
 type AmplifiedConstructor = <S, T>(container: S, tab: T) -> Amplified<T>
 
+--[[
+	A special table value that is treated as a special object in Amplifieds.
+	<br> `K` generic represents the specialvalue's `kind` singleton
+
+	Applications of this include `Antera.OnSet`, `ForSet`, `OnEvent` and `Child`
+]]
 export type SpecialValue<K> = {
 	__kind: K,
 	__prop: string | { string },
@@ -225,11 +262,21 @@ export type SpecialValue<K> = {
 	__fn: fn,
 }
 
-export type Mounted<T = table> = {
+--[[
+	A mounted object representing a connection between an Amplified and an Instance.
+	<br>Updating any key in the amplified will update it on the instance as a property, if it's valid.
+]]
+export type Mounted<T = table> = setmetatable<
+{
 	Instance: Instance,
 	Amplified: Amplified<T>,
 	Destroy: <A...>(A...) -> ()
-}
+},
+{
+	__index: Amplified<T>,
+	__newindex: Amplified<T>,
+	__call: (...any) -> T
+}>
 
 --[[
 	Internal spring that updates a single number value
@@ -254,9 +301,12 @@ type SpringProcess = {
 	SetGoal: (SpringProcess, number) -> (),
 }
 
+--[[
+	Types of values that can currently be animated with Springs
+]]
 export type Animatable = 
 	number |
-	string |
+	--string |
 	table | --this is an unsupported type, if i leave this commented the type solver bugs out lol
 	Vector2 |
 	Vector2int16 |
@@ -271,7 +321,10 @@ export type Animatable =
 	ColorSequenceKeypoint |
 	CFrame
 
-
+--[[
+	A spring object purposed for runtime animations.
+	<br>Creating a spring object will create the needed amount of SpringProcesses,<br>varying the number for optimization if some aren't needed.
+]]
 export type Spring<T = any> = State<T> & {
 	Velocity: T,
 	Goal: T,
@@ -279,12 +332,12 @@ export type Spring<T = any> = State<T> & {
 	Speed: number,
 
 	--[[
-		Desc
+		Detaches the spring from the Antera's spring solver
 	]]
 	Detach: (...any) -> (),
 
 	--[[
-		Desc
+		Attaches the spring to the Antera's spring solver
 	]]
 	Attach: (...any) -> (),
 
@@ -293,13 +346,12 @@ export type Spring<T = any> = State<T> & {
 	SetGoal: (Spring<T>, goal: T) -> (),
 
 	--[[
-		Desc
 		Sets goal in `sec` seconds to `goal` if the `goal` remains unchanged during this time
 	]]
 	DelayGoal: (Spring<T>, sec: number, goal: T) -> (),
 
 	--[[
-		Desc
+		Update the spring, by setting it's value to the one that it should have at the moment
 	]]
 	Update: (...any) -> (),
 }
@@ -307,6 +359,9 @@ export type Spring<T = any> = State<T> & {
 type AnteraValue<T> = index<typeof(Antera) & {[any]: never}, T>
 type AnexValue<T> = index<typeof(Anex) & table, T>
 
+--[[
+	Used for the `Antera.Import` tail types, `index` is a singleton with a number, like `"4"`
+]]
 type function importTail(t: type, index: type)
 	assert(t.tag)
 	assert(index.tag)
@@ -383,7 +438,7 @@ end
 --- Returns true if `t` is a specialValue table and false if not
 @native
 const function isspecial(t: any): boolean
-	return (typeof(t) == "table" and t.__kind and t.__prop and t.__fn) and true or false
+	return (typeof(t) == "table" and rawget(t, "__kind") and rawget(t, "__prop") and rawget(t, "__fn")) and true or false
 end
 
 --- For amplifieds, returns the next numeric key (non-key)
@@ -411,7 +466,7 @@ end
 --- Returns true if the value is a mounted object, and false if not
 @native
 const function ismounted<T>(t: T & table): boolean
-	return (typeof(t) == "table" and not isstate(nil, t) and t.Instance and t.Amplified and t.Destroy) and true or false
+	return (typeof(t) == "table" and not isstate(nil, t) and rawget(t, "Instance") and rawget(t, "Amplified") and rawget(t, "Destroy")) and true or false
 end
 
 @native
@@ -428,8 +483,11 @@ const function newspecial<K>(kind: K, prop: string | { string }, fn: fn, arg: an
 	}
 end
 
+--[[
+	Creates a new spring process that represents a single number value slowly moving toward it's goal
+]]
 const function springprocess(value: number, damping: number, speed: number): SpringProcess
-	const k = CONFIG.SpringConstant
+	const k = CONFIG.SpringStiffness
 	speed *= CONFIG.SpringSpeedCoefficient
 
 	local self = {
@@ -522,6 +580,9 @@ const function springprocess(value: number, damping: number, speed: number): Spr
 	return self
 end
 
+--[[
+	A shortcut used in springs, that generates the needed amount of springprocesses for<br>the value's type, configures the `setter` and `Update` method of the spring
+]]
 const function generateSprings(self: Spring, springs: {SpringProcess}, damping: number, speed: number, goals: (any) -> ...any, update: (...any) -> any, ...: any)
 	const values = {...}
 	for i=1, #values do
@@ -576,7 +637,7 @@ const function hasValue(t: table, v: any)
 end
 
 -- Confusable events, properties and what to recommend
--- i am doing this just because clickdetector just confused me and i dont want to open docs
+-- clickdetector just confused me and i dont want to open docs
 -- If you disable warnings and enable the Fix configs then these are aliases <<<<<<
 const ConfusableEvents = {
 	any = {
@@ -632,6 +693,9 @@ end
 const ClassPropertiesMemo = {}
 const ClassEventsMemo = {}
 
+--[[
+	For mounting: apply a property to an instance, passing all checks, write and read permissions included
+]]
 const function applyProperty(instance: Instance, prop: string, value: any?): (...any?)
 	const ClassProperty: never = ClassPropertiesMemo[instance.ClassName][prop]
 	if not ClassProperty :: any then 
@@ -680,6 +744,9 @@ const function applyProperty(instance: Instance, prop: string, value: any?): (..
 	ref(instance)[prop] = value
 end
 
+--[[
+	For mounting: connect a function to an instance's event, passing all checks, listening permissions included
+]]
 const function applyEvent(instance: Instance, event: string, fn: fn): RBXScriptConnection?
 	const ClassEvent: never = ClassEventsMemo[instance.ClassName][event]
 	if not ClassEvent :: any then 
@@ -755,9 +822,26 @@ Antera.Import = function<S, T>(
 	return reftail(table.unpack(args))
 end
 
+--[[
+	Creates a Spring state into the `container`.
+	<br>Springs are used to smoothly animate values with spring physics.
+
+	`damping < 1` makes an *underdamped* spring: will overshoot<br>
+	`damping = 1` makes a *critically damped* spring: perfect not to overshoot or speed up<br>
+	`damping > 1` makes an *overdamped* spring: will arrive faster
+
+	Constants:
+	- **c** = `critical * damping`, **critical damping** = `2sqrt(k*speed)`
+	- **m** = `1`
+	- modify stiffness **k** in Antera's CONFIG
+	- **speed** multiplies velocity
+]]
 Antera.Spring = function<S, T>(container: S, value: Animatable & T, damping: number, speed: number): Spring<T>
 	container = if container ~= Anex and container ~= Antera then container else nil
 	const self: Spring = Anex.State(container, value) :: any
+
+	Log.ErrorAssert(true, damping~=nil, `Antera:Spring received nil damping {speed~=nil and "and speed" or ""} parameter{speed~=nil and "s" or ""}`)
+	Log.ErrorAssert(true, speed~=nil, "Antera:Spring received nil speed parameter")
 
 	self.Speed = speed
 	self.Damping = damping
@@ -930,22 +1014,25 @@ Antera.Spring = function<S, T>(container: S, value: Animatable & T, damping: num
 	return self
 end
 
+--- Returns `true` if `t` is a `Mounted` object and `false` if not
 Antera.IsMountedObj = function<S, T>(self: S, t: T): boolean
 	return ismounted(t or self)
 end
 
+--- Returns `true` if `t` is an `Amplified` and `false` if not
 Antera.IsAmplified = function<S, T>(self: S, t: T): boolean
 	return isamplified(t or self)
 end
 
+--- Returns `true` if `t` is a `SpecialValue` object and `false` if not
 Antera.IsSpecial = function<S, T>(self: S, t: T): boolean
 	return isspecial(t or self)
 end
 
 --[[
-	A function to support starting the bootstrapper.<br>Returns the LocalPlayer.
+	A *client-only* function to support starting the bootstrapper.<br>Waits until the LocalPlayer exists and returns it.
 	```luau
-	const Players, Player = Antera:YieldForPlayer()
+	const Player = Antera:YieldForPlayer()
 	```
 ]]
 Antera.YieldForPlayer = function<S>(self: S): Player
@@ -956,6 +1043,23 @@ Antera.YieldForPlayer = function<S>(self: S): Player
 	repeat task.wait() until Players.LocalPlayer
 
 	return Players.LocalPlayer
+end
+
+--[[
+	A *client-only* function to support starting the bootstrapper.<br>Waits until the LocalPlayer's character exists and returns it.<br> Should be used after `Antera:YieldForPlayer()`
+	```luau
+	const Player = Antera:YieldForPlayer()
+	const Char = Antera:YieldForPlayerCharacter()
+	```
+]]
+Antera.YieldForPlayerCharacter = function<S>(self: S): Model
+	Log.ErrorAssert(true, RunService:IsClient(), "Attempt to call Antera:YieldForPlayerCharacter() on the server.")
+	const Player = Players.LocalPlayer
+
+	if Player.Character then return Player.Character end
+	repeat task.wait() until Players.LocalPlayer.Character
+
+	return Players.LocalPlayer.Character :: Model
 end
 
 --[[
@@ -983,6 +1087,23 @@ Antera.GUI = function<S>(container: S, name: string)
 	end
 end
 
+--[[
+	*Shortcut for `Antera.Mount(container, Instance.new(instanceClass), amplified)`*
+	<br>Creates a new instance of `instanceClass` and mounts `amplified` on it,<br>also applies templates if specified in CONFIG.
+
+	```luau
+	Antera:New "Part" {
+		Parent = workspace,
+		Position = Vector3.new(0, 5, 0),
+		Name = "KillBrick",
+
+		Antera:OnEvent "Touched" (function(self, mounted, hit)
+			if not hit.Parent or not hit.Parent:FindFirstChild("Humanoid") then return end
+			hit.Parent.Humanoid.Health = 0
+		end)
+	})
+	```
+]]
 Antera.New = function<S, T>(container: S, instanceClass: string)
 	return function<T>(amplified: (T & table) | Amplified<T>)
 		const instance = Instance.new(instanceClass)
@@ -1008,6 +1129,25 @@ Antera.New = function<S, T>(container: S, instanceClass: string)
 	end
 end
 
+--[[
+	Creates a new `Mounted` object into the `container`.
+	<br>Mounteds represent a connection between the `amplified` and the `instance`,<br>reflecting every key as a property (if valid) and every change made in the `amplified`.
+
+	```luau
+	const part = Instance.New("Part")
+
+	Antera:Mount(part, {
+		Parent = workspace,
+		Position = Vector3.new(0, 5, 0),
+		Name = "KillBrick",
+
+		Antera:OnEvent "Touched" (function(self, mounted, hit)
+			if not hit.Parent or not hit.Parent:FindFirstChild("Humanoid") then return end
+			hit.Parent.Humanoid.Health = 0
+		end)
+	})
+	```
+]]
 Antera.Mount = function<S, T>(container: S, instance: Instance, amplified: (T & table) | Amplified<T>): Mounted<T>
 	Log.ErrorAssert(true, instance, "Antera:Mount received no instance (2nd parameter)")
 	Log.ErrorAssert(true, typeof(instance) == "Instance", "Antera:Mount received a non-instance (2nd parameter)")
@@ -1030,7 +1170,8 @@ Antera.Mount = function<S, T>(container: S, instance: Instance, amplified: (T & 
 	-- memo to unparent children once the value changes
 	const children: {[any]: Instance} = {}
 
-	self = {
+	self = setmetatable(
+	{
 		Instance = instance,
 		Amplified = amplified,
 		Destroy = function<A...>(...: A...)
@@ -1046,7 +1187,15 @@ Antera.Mount = function<S, T>(container: S, instance: Instance, amplified: (T & 
 			table.clear(self)
 			self = nil :: never
 		end
+	},
+	{
+		__index = amplified,
+		__newindex = amplified,
+		__call = function(_, ...)
+			return (amplified :: Amplified<T>)(...)
+		end
 	}
+	)
 
 	-- properties
 
@@ -1169,6 +1318,21 @@ end
 ]]
 Antera.Child = newspecial<<"Child">>("Child", "None", "None" :: any)
 
+--[[
+	Identical to `Antera.OnSet`, except the function is called immediately.
+	<br>Connects a function `fn` to be called whenever the specified ***amplified keys*** in `...` are changed.
+	<br>When used with a key, the key is set to the returned value.
+
+	```luau
+	Antera:Amplify {
+		foo = 10,
+
+		Antera:ForSet "foo" (function(self, mounted)
+			print(`foo is now {self.foo}`)
+		end)
+	})
+	```
+]]
 Antera.ForSet = function<S, T>(container: S, ...: string)
 	local prop = { ... }
 	return function(fn: fn): SpecialValue<"ForSet">
@@ -1182,6 +1346,20 @@ Antera.ForSet = function<S, T>(container: S, ...: string)
 	end
 end
 
+--[[
+	Connects a function `fn` to be called whenever the specified ***amplified keys*** in `...` are changed.
+	<br>When used with a key, the key is set to the returned value. Originally it's `nil` or the specified `arg`.
+
+	```luau
+	Antera:Amplify {
+		foo = 10,
+
+		Antera:OnSet "foo" (function(self, mounted)
+			print(`foo is now {self.foo}`)
+		end)
+	})
+	```
+]]
 Antera.OnSet = function<S, T>(container: S, ...: string)
 	local prop = { ... }
 	return function(fn: (self: Amplified) -> any?, arg: any?): SpecialValue<"OnSet">
@@ -1195,6 +1373,24 @@ Antera.OnSet = function<S, T>(container: S, ...: string)
 	end
 end
 
+--[[
+	Connects a function `fn` to an event or many events specified in `...`, when used in Amplifieds.
+	<br>The function is called with the Amplified and the Mounted object passed first, 
+	<br>then go the arguments passed by the signal.
+
+	```luau
+	Antera:New "Part" {
+		Parent = workspace,
+		Position = Vector3.new(0, 5, 0),
+		Name = "KillBrick",
+
+		Antera:OnEvent "Touched" (function(self, mounted, hit)
+			if not hit.Parent or not hit.Parent:FindFirstChild("Humanoid") then return end
+			hit.Parent.Humanoid.Health = 0
+		end)
+	})
+	```
+]]
 Antera.OnEvent = function<S, T>(container: S, ...: string)
 	local prop = { ... }
 	return function(fn: (self: Amplified, mounted: Mounted, ...any) -> any?, arg: any?): SpecialValue<"OnEvent">
@@ -1208,6 +1404,24 @@ Antera.OnEvent = function<S, T>(container: S, ...: string)
 	end
 end
 
+--[[
+	Connects a function `fn` to the `GetPropertyChangedSignal(s)` for one
+	<br>or multiple properties passed in `...`,  when used in Amplifieds.
+	<br>The function is called with the Amplified, the Mounted object and the new value of the property that changed.
+
+	```luau
+	Antera:New "Part" {
+		Parent = workspace,
+		Position = Vector3.new(0, 5, 0),
+		Anchored = true,
+		Name = "Anchor",
+
+		Antera:OnChange "Anchored" (function(self, mounted, anchored)
+			print(`Part is now {anchored and "" or "not"} anchored`)
+		end)
+	})
+	```
+]]
 Antera.OnChange = function<S, T>(container: S, ...: string)
 	local prop = { ... }
 	return function(fn: (self: Amplified, mounted: Mounted, ...any) -> any?, arg: any?): SpecialValue<"OnChange">
@@ -1221,6 +1435,27 @@ Antera.OnChange = function<S, T>(container: S, ...: string)
 	end
 end
 
+--[[
+	Amplifies the given `tab` table.
+	Amplified tables are tables integrated with reactive functionality<br>and fully suited for UI.
+
+	Amplifieds have a multitude of utilities, such as `Antera.OnSet`, `Antera.Mount` or `Antera.OnEvent`.
+
+	```luau
+	const amp = Antera:Amplify {
+		foo = 10,
+		bar = function(self)
+			return self.foo + 10
+		end,
+
+		{
+			quux = "Hello world!"
+		}
+	}
+	amp.foo = 20
+	amp:Update("bar")
+	```
+]]
 Antera.Amplify = function<S, T>(container: S, tab: T)
 	const VALUE: table = {}
 
