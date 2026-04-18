@@ -1,6 +1,6 @@
 [package]
 name = "r-iva9/antera"
-description = "Reactive UI Framework for Luau and the Allure Ecosystem."
+description = "Reactive Comfortable UI Framework for Luau and the Allure Ecosystem."
 license = "MIT"
 authors = ["r-iva9"]
 version = "1.0.0"
