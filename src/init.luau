@@ -18,7 +18,7 @@
     By r-iva9
 	https://github.com/r-iva9/Allure
 ]]
-const VERSION = "1.0.0"
+const VERSION = table.freeze {major = 1, minor = 0, patch = 1, release = false}
 
 ------------
 -- CONFIG
