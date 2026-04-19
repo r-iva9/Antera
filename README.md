@@ -15,20 +15,18 @@ Antera = "r-iva9/antera@1.0.0"
 ## 🍀 Benefits
 
 - ***Comfortable and syntax minimal***
-  > Set states via `state(val)`, get states via `state()`, connect states via `stateA(stateB)`<br>
-  > Create new states from `stateA + stateB`, `stateA .. stateB` and more!
+  > TBD
 
 - ***Customizable***
-  > Customize how your states change via `state:Setter()`<br>
-  > Customize how your states give you their value via `state:Getter()`.
+  > TBD
 
 - ***Suited for the Allure Ecosystem***
-  > Very easy to use with Allure and other modules of the ecosystem.
+  > TBD
 
 # ⚒️ Basic usage
 
-Anex introduces basic Hooks and States.
+TBD
 
-## Hooks
+## Amplified Tables
 
-Create a new Hook:
+TBD
