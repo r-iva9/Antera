@@ -48,7 +48,7 @@ or via source:
   > }
   > ```
 
-- ***Customizable***
+- ***Extend the approach - Powerful***
   > TBD
 
 - ***Suited for the Allure Ecosystem***
