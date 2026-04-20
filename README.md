@@ -1,10 +1,16 @@
-<img width="149" height="32" alt="link-github-releases" src="https://github.com/user-attachments/assets/65243009-1ea2-4f68-af49-6acee703345b" /><p align="center">
+<p align="center">
   <h1 align="center"><i><ins>Antera</ins></i></h1>
 </p>
 
 <p align="center">
-  <b><i>Customizable state management<br>for Luau and the <a href=https://github.com/r-iva9/Allure>Allure Ecosystem</a></i></b>
+  <i>Customizable state management<br>for Luau and the <a href=https://github.com/r-iva9/Allure>Allure Ecosystem</a></i>
 </p>
+
+<div align="center">
+  [![Docs](assets/link-docs.svg)](https://r-iva9.github.io/Allure/)
+  [![Releases](assets/link-github-releases.svg)](https://github.com/r-iva9/Antera/releases)
+  [![Wally](assets/link-wally.svg)](https://wally.run/package/r-iva9/antera)
+</div>
 
 ## 📦 Installation
 Install via wally:
