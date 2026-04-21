@@ -31,9 +31,9 @@ or via source:
 > 1. Download the `.rbxm` file asset from the latest release
 > 2. Place it in your Shared packages or ReplicatedStorage/Packages
 
-## 🍀 Goals of the project - Benefits
+## 🍀 Main Benefits
 
-- ***Most of the syntax is inside tables - Comfortable and simple***
+- ***Comfortable and simple***
   > ```luau
   > local counter = Antera:New "TextButton" {
   >   count = Anex:State(0),
@@ -51,8 +51,24 @@ or via source:
 - ***Extend the approach - Powerful***
   > TBD
 
-- ***Suited for the Allure Ecosystem***
-  > TBD
+- ***Universal***
+  > ```luau
+  > Antera:New "TextButton" {
+  >   entered = main:State(false),
+  > 
+  >   main:OnEvent ("MouseEnter", "MouseLeave") (function(self, mounted, input: InputObject): any?
+  >     self.entered(not self().entered)
+  >   end),
+  > 
+  >   IAS = function(outer)
+  >     return main:Mount(UserInputService, {
+  >       scrolled = main:OnEvent "InputBegan" (function(self, amplify)
+  >         warn(outer().entered)
+  >       end)
+  >     })
+  >   end
+  > }
+  > ```
 
 ## ⚒️ Integration
 
